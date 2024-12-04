@@ -33,6 +33,7 @@ wp.Modula = 'undefined' === typeof wp.Modula ? {} : wp.Modula;
 
 		createStates: function () {
 			var options = this.options;
+			options.library = options.library ? options.library : {};
 			options.library.type = 'image';
 			if (this.options.states) {
 				return;
@@ -272,7 +273,9 @@ wp.Modula = 'undefined' === typeof wp.Modula ? {} : wp.Modula;
 				modula_files_count = 0;
 
 			uploader = new wp.Uploader(modulaGalleryObject.uploaderOptions);
-
+			if( ! uploader.uploader ) {
+				return;
+			}
 			// Uploader events
 			// Files Added for Uploading - show progress bar
 			uploader.uploader.bind(
