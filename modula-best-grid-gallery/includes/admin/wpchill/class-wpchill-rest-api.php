@@ -4,8 +4,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-class Modula_Rest_Api {
-	protected $namespace = 'modula/v1';
+//phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedClassFound
+class WPChill_Rest_Api {
+	protected $namespace = 'wpchill/v1';
 
 	public function __construct() {
 		add_action( 'rest_api_init', array( $this, 'register_routes' ) );
@@ -42,11 +43,21 @@ class Modula_Rest_Api {
 			)
 		);
 
+		register_rest_route(
+			$this->namespace,
+			'/activate-plugin',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'plugin_activation' ),
+				'permission_callback' => array( $this, '_permissions_check' ),
+			)
+		);
+
 		do_action( 'modula_rest_api_register_routes', $this );
 	}
 
 	public function process_request( $request ) {
-		$manager = Modula_Notifications::get_instance();
+		$manager = WPChill_Notifications::get_instance();
 		if ( 'DELETE' === $request->get_method() ) {
 			$body    = $request->get_json_params();
 			$post_id = isset( $body['id'] ) ? $body['id'] : false;
@@ -77,13 +88,13 @@ class Modula_Rest_Api {
 	}
 
 	public function delete_notifications() {
-		$manager = Modula_Notifications::get_instance();
+		$manager = WPChill_Notifications::get_instance();
 		$manager->clear_notifications();
 		return rest_ensure_response( true );
 	}
 
 	public function delete_notification( $request ) {
-		$manager         = Modula_Notifications::get_instance();
+		$manager         = WPChill_Notifications::get_instance();
 		$body            = $request->get_json_params();
 		$notification_id = $request->get_param( 'id' );
 
@@ -97,7 +108,7 @@ class Modula_Rest_Api {
 	}
 
 	public function get_notifications() {
-		$manager       = Modula_Notifications::get_instance();
+		$manager       = WPChill_Notifications::get_instance();
 		$notifications = $manager->get_notifications();
 
 		$is_empty = array_reduce(
@@ -109,6 +120,12 @@ class Modula_Rest_Api {
 		);
 
 		return rest_ensure_response( $is_empty ? array() : $notifications );
+	}
+
+	public function plugin_activation( $request ) {
+		$plugin_slug = $request->get_param( 'plugin' );
+
+		return rest_ensure_response( WPChill_About_Us::activate_plugin( $plugin_slug ) );
 	}
 
 	public function _permissions_check() {
