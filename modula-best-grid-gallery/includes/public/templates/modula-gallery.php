@@ -45,7 +45,7 @@
 				'enableLinkedin'         => boolval( $data->settings['enableLinkedin'] ),
 				'enableEmail'            => boolval( $data->settings['enableEmail'] ),
 				'socialDesktopCollapsed' => boolval( $data->settings['socialDesktopCollapsed'] ),
-				'lazyLoad'               => boolval( $data->settings['lazy_load'] ),
+				'lazyLoad'               => modula_run_lazy_load( $data->settings ),
 
 				/* Item container attributes & classes */
 				'item_classes'           => array( 'modula-item' ),
@@ -55,6 +55,8 @@
 				'link_classes'           => array( 'tile-inner', 'modula-item-link' ),
 				'link_attributes'        => array(
 					'data-image-id' => $image['id'],
+					/*Accessibility */
+					'role'          => 'button',
 				),
 
 				/* Item img attributes & classes */
