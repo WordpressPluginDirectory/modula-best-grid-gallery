@@ -1,3 +1,22 @@
+= 2.14.6 - 07.02.2026 =
+Fixed: Beaver Builder block directory path.
+
+= 2.14.5 - 07.02.2026 =
+Fixed: Telemetry dismiss notice was not working correctly.
+Added: Extensions page design improvements.
+
+= 2.14.4 - 06.02.2026 =
+Fixed: Various issues and bugs.
+
+= 2.14.3 - 06.02.2026 =
+Fixed: Various issues and bugs.
+
+= 2.14.2 - 05.02.2026 =
+Fixed: Various issues and bugs.
+
+= 2.14.1 - 05.02.2026 =
+Fixed: Various issues and bugs.
+
 = 2.14.0 - 05.02.2026 =
 Changed: Multiple improvements to the codebase.
 Added: Support for extensions bundled in pro
