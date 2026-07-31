@@ -1,3 +1,22 @@
+= 2.14.34 - 30.07.2026 =
+Added: email_html sanitizer for full HTML email templates in settings.
+Changed: Image select field upload button label can be customized per field.
+Fixed: Strip leading empty paragraphs from email HTML on save to avoid unwanted top spacing.
+
+= 2.14.33 - 29.07.2026 =
+Fixed: Extensions REST endpoint being cached by page caching plugins, causing stale extension states.
+
+= 2.14.32 - 28.07.2026 =
+Added: Code editor field for HTML based settings.
+
+= 2.14.31 - 20.07.2026 =
+Fixed: Security issue.
+
+= 2.14.30 - 16.06.2026 =
+Fixed: PHP warning for undefined variable $item_data when gallery has no renderable images.
+Fixed: Bulk add images to gallery from Media Library not working correctly.
+Fixed: Telemetry retry queue could grow indefinitely causing excessive database writes.
+
 = 2.14.29 - 12.06.2026 =
 Fixed: Image caption changes no longer affect the description in media library.
 
