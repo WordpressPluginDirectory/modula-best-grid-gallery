@@ -2,9 +2,9 @@
 Contributors: wpchill, silkalns  
 Tags: gallery plugin, image gallery, video gallery, responsive gallery, WordPress gallery plugin 
 Requires at least: 5.3
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 5.6
-Stable tag: 2.14.34
+Stable tag: 2.14.36
 
 License: GNU General Public License v3.0 or later  
 
@@ -325,6 +325,12 @@ The simplest way to install is to click on 'Plugins' then 'Add' and type 'Modula
 4. Mobile Responsive Image Galleries - Galleries automatically adapt to smartphone and tablet screen sizes
 
 == Changelog ==
+= 2.14.36 - 13.08.2026 =
+Fixed: Compatibility with WordPress 7.1
+
+= 2.14.35 - 05.08.2026 =
+Fixed: Undefined index notice when gallery settings are empty.
+
 = 2.14.34 - 30.07.2026 =
 Added: email_html sanitizer for full HTML email templates in settings.
 Changed: Image select field upload button label can be customized per field.
