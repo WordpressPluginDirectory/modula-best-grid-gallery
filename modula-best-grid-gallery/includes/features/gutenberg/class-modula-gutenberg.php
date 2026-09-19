@@ -15,7 +15,7 @@ class Modula_Gutenberg {
 	/**
 	 * Main construct function
 	 */
-	function __construct() {
+	public function __construct() {
 
 		// Return early if this function does not exist.
 		if ( ! function_exists( 'register_block_type' ) ) {
@@ -48,6 +48,7 @@ class Modula_Gutenberg {
 		register_block_type(
 			'modula/gallery',
 			array(
+				'api_version'     => 3,
 				'render_callback' => array( $this, 'render_modula_gallery' ),
 				'editor_script'   => 'modula-gutenberg',
 				'editor_style'    => array( 'modula-gutenberg', 'modula-front-editor' ),
@@ -140,7 +141,7 @@ class Modula_Gutenberg {
 
 			return $html;
 		} else {
-			return '[modula id=' . absint( $atts['id'] ) . ' align=' . esc_attr( $atts['align'] ) . ']';
+			return do_shortcode( '[modula id=' . absint( $atts['id'] ) . ' align=' . esc_attr( $atts['align'] ) . ']' );
 		}
 	}
 
@@ -172,7 +173,7 @@ class Modula_Gutenberg {
 		}
 
 		$in_view          = false;
-		$inview_permitted = apply_filters( 'modula_loading_inview_grids', array( 'custom-grid', 'creative-gallery', 'grid' ), $settings );
+		$inview_permitted = apply_filters( 'modula_loading_inview_grids', array( 'custom-grid', 'creative-gallery', 'grid', 'polaroid' ), $settings );
 		if ( isset( $settings['inView'] ) && '1' == $settings['inView'] && in_array( $type, $inview_permitted, true ) ) {
 			$in_view = true;
 		}
@@ -203,11 +204,59 @@ class Modula_Gutenberg {
 			$effect = $_POST['effect']; //phpcs:ignore
 		}
 
+		// Legacy preset slugs are gone; composable hover uses v2 `hover_builder`. Respond with all slots enabled for the block UI.
+		if ( ! is_string( $effect ) || '' === $effect ) {
+			wp_send_json(
+				array(
+					'title'       => true,
+					'description' => true,
+					'social'      => true,
+					'scripts'     => false,
+				)
+			);
+			die();
+		}
+
 		$effect_check = Modula_Helper::hover_effects_elements( $effect );
 
 		wp_send_json( $effect_check );
 
 		die();
+	}
+
+	/**
+	 * WP_Query args for Gutenberg gallery picker search.
+	 *
+	 * @param string $term Title fragment or gallery post id.
+	 * @return array
+	 */
+	public static function get_gallery_search_query_args( $term ) {
+		$term = is_string( $term ) ? trim( $term ) : (string) $term;
+
+		return array(
+			'post_type'      => 'modula-gallery',
+			'posts_per_page' => -1,
+			's'              => $term,
+		);
+	}
+
+	/**
+	 * WP_Query args to match a gallery by post id, or null when $term is not an id.
+	 *
+	 * @param string $term Title fragment or gallery post id.
+	 * @return array|null
+	 */
+	public static function get_gallery_id_search_query_args( $term ) {
+		$term = is_string( $term ) ? trim( $term ) : (string) $term;
+		if ( ! ctype_digit( $term ) ) {
+			return null;
+		}
+
+		return array(
+			'post_type'      => 'modula-gallery',
+			'posts_per_page' => 1,
+			'p'              => (int) $term,
+		);
 	}
 
 	public function get_gallery() {
@@ -222,20 +271,30 @@ class Modula_Gutenberg {
 		}
 
 		$suggestions = array();
+		$seen        = array();
 		$term        = isset( $_GET['term'] ) ? sanitize_text_field( wp_unslash( $_GET['term'] ) ) : '';
+		$queries     = array( self::get_gallery_search_query_args( $term ) );
+		$id_args     = self::get_gallery_id_search_query_args( $term );
 
-		$loop = new WP_Query(
-			array(
-				'p'              => $term,
-				'post_type'      => 'modula-gallery',
-				'posts_per_page' => -1,
-			)
-		);
-		while ( $loop->have_posts() ) {
-			$loop->the_post();
-			$suggestion['label'] = get_the_title();
-			$suggestion['value'] = get_the_ID();
-			$suggestions[]       = $suggestion;
+		if ( is_array( $id_args ) ) {
+			$queries[] = $id_args;
+		}
+
+		foreach ( $queries as $query_args ) {
+			$loop = new WP_Query( $query_args );
+			while ( $loop->have_posts() ) {
+				$loop->the_post();
+				$gallery_id = get_the_ID();
+				if ( isset( $seen[ $gallery_id ] ) ) {
+					continue;
+				}
+				$seen[ $gallery_id ] = true;
+				$suggestions[]       = array(
+					'label' => get_the_title(),
+					'value' => $gallery_id,
+				);
+			}
+			wp_reset_postdata();
 		}
 
 		wp_send_json( $suggestions );
@@ -250,7 +309,13 @@ class Modula_Gutenberg {
 	 * @since 2.11.3
 	*/
 	public function rest_api_filter_data( $response, $post, $request ) {
-		$data   = $response->get_data();
+		$data = $response->get_data();
+
+		// Partial REST responses (e.g. `_fields`) may omit gallery meta.
+		if ( empty( $data['modulaImages'] ) || ! is_array( $data['modulaImages'] ) ) {
+			return $response;
+		}
+
 		$images = $data['modulaImages'];
 
 		foreach ( $images as $key => $image ) {

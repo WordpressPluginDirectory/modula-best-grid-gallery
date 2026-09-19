@@ -3,6 +3,8 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
+
+require_once dirname( __FILE__ ) . '/class-modula-folder-import-path.php';
 /**
  * Class Modula_Gallery_Upload
  *
@@ -13,6 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 
 class Modula_Gallery_Upload {
+
 
 
 	/**
@@ -61,24 +64,10 @@ class Modula_Gallery_Upload {
 		add_action( 'modula_gallery_media_select_option', array( $this, 'add_folder_browser_button' ), 20 );
 		// Create the media browser.
 		add_action( 'media_upload_modula_file_browser', array( $this, 'media_browser' ) );
-		// AJAX list files.
-		add_action( 'wp_ajax_modula_list_folders', array( $this, 'ajax_list_folders' ) );
-		// Add required scripts.
+		// Folder/ZIP import API: Modula\V2\Rest\Gallery_Upload_Controller (REST only).
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_scripts' ) );
-		// AJAX check paths.
-		add_action( 'wp_ajax_modula_check_paths', array( $this, 'ajax_check_paths' ) );
-		// AJAX check files from paths.
-		add_action( 'wp_ajax_modula_check_files', array( $this, 'ajax_check_files' ) );
-		// AJAX function to import images from a folder.
-		add_action( 'wp_ajax_modula_import_file', array( $this, 'ajax_import_file' ) );
-		// AJAX function to update the gallery modula-images post meta.
-		add_action( 'wp_ajax_modula_add_images_ids', array( $this, 'ajax_modula_add_images_ids' ) );
-		// Add the Upload zip button.
 		add_action( 'modula_gallery_media_select_option', array( $this, 'add_upload_zip_button' ), 40 );
-		// Change the upload dir for the zip file.
 		add_filter( 'upload_dir', array( $this, 'zip_upload_dir' ) );
-		// AJAX to unzip the uploaded zip file.
-		add_action( 'wp_ajax_modula_unzip_file', array( $this, 'ajax_unzip_file' ) );
 	}
 
 	/**
@@ -119,15 +108,897 @@ class Modula_Gallery_Upload {
 	}
 
 	/**
-	 * Set the default directory for the media browser. By default, it's the uploads directory.
+	 * Normalize paths parameter from JSON POST / REST (string, JSON array string, or array).
+	 *
+	 * @param mixed $paths Raw paths.
+	 * @return array
+	 */
+	private function normalize_paths_input( $paths ) {
+		if ( is_array( $paths ) ) {
+			return array_map( 'sanitize_text_field', wp_unslash( $paths ) );
+		}
+		if ( is_string( $paths ) ) {
+			$decoded = json_decode( wp_unslash( $paths ), true );
+			if ( is_array( $decoded ) ) {
+				return array_map( 'sanitize_text_field', $decoded );
+			}
+			$one = sanitize_text_field( wp_unslash( $paths ) );
+			return '' !== $one ? array( $one ) : array();
+		}
+		return array();
+	}
+
+	/**
+	 * REST: child folders for the folder browser (replaces ajax_list_folders).
+	 *
+	 * @param string $path Server path.
+	 * @param bool   $input_checked Checkbox state for new rows.
+	 * @return array|\WP_Error List of item arrays or error.
+	 */
+	public function rest_list_folder_items( $path, $input_checked ) {
+		if ( ! $this->check_user_upload_rights() ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$path = is_string( $path ) ? sanitize_text_field( wp_unslash( $path ) ) : '';
+		if ( '' === $path ) {
+			return new \WP_Error(
+				'modula_no_path',
+				__( 'No path was provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		$real_path   = realpath( $path );
+		$browse_real = realpath( $this->get_folder_import_browse_root() );
+		if ( false === $real_path || false === $browse_real || ! Modula_Folder_Import_Path::is_path_under_root( $real_path, $browse_real ) ) {
+			return new \WP_Error(
+				'modula_invalid_path',
+				__( 'Invalid file path.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		$files = $this->list_folders( $path );
+		if ( false === $files || ! is_array( $files ) ) {
+			return array();
+		}
+		$items = array();
+		foreach ( $files as $found_file ) {
+			$file    = $this->mb_pathinfo( $found_file['path'] );
+			$value   = trailingslashit( $file['dirname'] ) . $file['basename'];
+			$items[] = array(
+				'value'     => $value,
+				'basename'  => $file['basename'],
+				'data_path' => $value,
+				'checked'   => (bool) $input_checked,
+			);
+		}
+		return $items;
+	}
+
+	/**
+	 * REST: validate folder paths (replaces ajax_check_paths).
+	 *
+	 * @param int   $gallery_id Gallery post ID.
+	 * @param mixed $paths Raw paths.
+	 * @return array|\WP_Error Valid folder paths.
+	 */
+	public function rest_check_paths( $gallery_id, $paths ) {
+		if ( ! $this->check_user_upload_rights() ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$gallery_id                 = absint( $gallery_id );
+		$this->uploaded_error_files = $this->get_uploaded_error_files( $gallery_id );
+		$path_list                  = $this->normalize_paths_input( $paths );
+		$folders                    = array();
+		foreach ( $path_list as $path ) {
+			if ( $this->check_folder( $path ) ) {
+				$folders[] = $path;
+			} else {
+				$this->uploaded_error_files['folders'][] = $path;
+			}
+		}
+		$prev_uploaded_files = $this->get_uploaded_error_files( $gallery_id );
+		$uploaded_files      = array_merge( $prev_uploaded_files, $this->uploaded_error_files );
+		$this->update_uploaded_error_files( $gallery_id, $uploaded_files );
+		if ( empty( $folders ) ) {
+			return new \WP_Error(
+				'modula_no_valid_paths',
+				__( 'No valid paths were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		return $folders;
+	}
+
+	/**
+	 * REST: list image files under paths (replaces ajax_check_files).
+	 *
+	 * @param mixed $paths Raw paths.
+	 * @return array|\WP_Error File paths.
+	 */
+	public function rest_check_files( $paths ) {
+		if ( ! $this->check_user_upload_rights() ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$path_list = $this->normalize_paths_input( $paths );
+		if ( empty( $path_list ) ) {
+			return new \WP_Error(
+				'modula_no_paths',
+				__( 'No paths were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		$files = array();
+		foreach ( $path_list as $path ) {
+			$files = array_merge( $files, $this->get_files( $path ) );
+		}
+		if ( empty( $files ) ) {
+			return new \WP_Error(
+				'modula_no_files',
+				__( 'No valid files were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		return $files;
+	}
+
+	/**
+	 * REST: import one file into the media library (replaces ajax_import_file).
+	 *
+	 * @param int    $gallery_id Gallery ID (for error meta).
+	 * @param string $file Server file path.
+	 * @param bool   $delete_file Whether Delete after import was requested (unlinks source after a temp sideload).
+	 * @return int|\WP_Error Attachment ID.
+	 */
+	public function rest_import_file( $gallery_id, $file, $delete_file ) {
+		if ( ! $this->check_user_upload_rights() ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$file = is_string( $file ) ? wp_unslash( $file ) : '';
+		if ( '' === $file ) {
+			return new \WP_Error(
+				'modula_no_file',
+				__( 'No files were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		$real_path    = realpath( $file );
+		$uploads_dir  = wp_upload_dir();
+		$allowed_base = realpath( $uploads_dir['basedir'] );
+
+		if ( false === $real_path || false === $allowed_base || ! Modula_Folder_Import_Path::is_path_under_root( $real_path, $allowed_base ) ) {
+			return new \WP_Error(
+				'modula_invalid_path',
+				__( 'Invalid file path.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		if ( ! file_exists( $real_path ) || ! is_readable( $real_path ) ) {
+			return new \WP_Error(
+				'modula_unreadable',
+				__( 'File does not exist or is not readable.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$resolved   = $this->resolve_folder_import_attachment( $real_path );
+		$authorized = Modula_Folder_Import_Path::authorize_import( $resolved, (bool) $delete_file, 'current_user_can' );
+		if ( is_wp_error( $authorized ) ) {
+			return $authorized;
+		}
+
+		$gallery_id    = absint( $gallery_id );
+		$attachment_id = $this->upload_image( $real_path, (bool) $delete_file );
+		if ( ! $attachment_id ) {
+			if ( $gallery_id > 0 ) {
+				$prev_uploaded_files       = $this->get_uploaded_error_files( $gallery_id );
+				$uploaded_files['files'][] = $file;
+				$this->update_uploaded_error_files( $gallery_id, array_merge( $prev_uploaded_files, $uploaded_files ) );
+			}
+			return new \WP_Error(
+				'modula_import_failed',
+				__( 'The file could not be uploaded.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		return (int) $attachment_id;
+	}
+
+	/**
+	 * Gallery layout type string (e.g. custom-grid) from v2 grouped settings or flat modula-settings.
+	 *
+	 * @param int $gallery_id Gallery post ID.
+	 * @return string
+	 */
+	private function get_gallery_layout_type_string( $gallery_id ) {
+		$gallery_id = absint( $gallery_id );
+		if ( ! $gallery_id ) {
+			return '';
+		}
+		if ( class_exists( '\Modula\V2\Meta_Sync', false ) ) {
+			$v2 = \Modula\V2\Meta_Sync::get_settings_v2( $gallery_id );
+			if ( is_array( $v2 ) && isset( $v2['general']['type'] ) && is_string( $v2['general']['type'] ) ) {
+				return $v2['general']['type'];
+			}
+		}
+		$flat = get_post_meta( $gallery_id, 'modula-settings', true );
+		if ( is_array( $flat ) && isset( $flat['type'] ) ) {
+			return (string) $flat['type'];
+		}
+		return '';
+	}
+
+	/**
+	 * Column count (1–12) for grid-like layouts: v2 layout.gridType or flat columns.
+	 *
+	 * @param int $gallery_id Gallery post ID.
+	 * @return int
+	 */
+	private function get_gallery_grid_column_count( $gallery_id ) {
+		$gallery_id = absint( $gallery_id );
+		if ( ! $gallery_id ) {
+			return 12;
+		}
+		if ( class_exists( '\Modula\V2\Meta_Sync', false ) ) {
+			$v2 = \Modula\V2\Meta_Sync::get_settings_v2( $gallery_id );
+			if ( is_array( $v2 ) && isset( $v2['layout']['gridType'] ) ) {
+				$c = absint( $v2['layout']['gridType'] );
+				if ( $c >= 1 && $c <= 12 ) {
+					return $c;
+				}
+			}
+		}
+		$flat = get_post_meta( $gallery_id, 'modula-settings', true );
+		if ( is_array( $flat ) && isset( $flat['columns'] ) ) {
+			$c = absint( $flat['columns'] );
+			if ( $c >= 1 && $c <= 12 ) {
+				return $c;
+			}
+		}
+		return 12;
+	}
+
+	/**
+	 * Enlarge custom-grid spans (preserving w:h) so the smaller side is at least $min_side units, within column/row caps.
+	 *
+	 * @param int $w         Width in grid units.
+	 * @param int $h         Height in grid units.
+	 * @param int $columns   Max tile width.
+	 * @param int $min_side  Minimum span on the shorter side (default 3 — readable on canvas).
+	 * @param int $max_h     Max tile height in rows.
+	 * @return int[] { width, height }.
+	 */
+	private function scale_custom_grid_spans_to_minimum_floor( $w, $h, $columns, $min_side = 3, $max_h = 8 ) {
+		$columns  = max( 1, min( 12, absint( $columns ) ) );
+		$min_side = max( 1, absint( $min_side ) );
+		$max_h    = max( 1, absint( $max_h ) );
+		$w        = max( 1, absint( $w ) );
+		$h        = max( 1, absint( $h ) );
+
+		if ( min( $w, $h ) >= $min_side ) {
+			return array(
+				min( $columns, $w ),
+				min( $max_h, $h ),
+			);
+		}
+
+		$k_max = min(
+			$w > 0 ? (int) floor( $columns / $w ) : 1,
+			$h > 0 ? (int) floor( $max_h / $h ) : 1
+		);
+		$k_max = max( 1, $k_max );
+		$k     = 1;
+		for ( $try = 1; $try <= $k_max; $try++ ) {
+			if ( min( $w * $try, $h * $try ) >= $min_side ) {
+				$k = $try;
+				break;
+			}
+		}
+		$w = min( $columns, $w * $k );
+		$h = min( $max_h, $h * $k );
+
+		// e.g. full-width strip with h=2 cannot scale horizontally; grow height until readable.
+		while ( $h < $max_h && min( $w, $h ) < $min_side ) {
+			++$h;
+		}
+		if ( min( $w, $h ) < $min_side && $w < $columns ) {
+			$w = min( $columns, max( $w, $min_side ) );
+		}
+
+		return array(
+			max( 1, min( $columns, $w ) ),
+			max( 1, min( $max_h, $h ) ),
+		);
+	}
+
+	/**
+	 * Map image pixel aspect ratio to custom-grid spans (w × h), assuming ~square cells in the editor.
+	 *
+	 * @param int $img_w     Attachment width in px.
+	 * @param int $img_h     Attachment height in px.
+	 * @param int $columns   Max tile width in grid units.
+	 * @return int[] { width, height }.
+	 */
+	private function custom_grid_tile_spans_from_pixel_ratio( $img_w, $img_h, $columns ) {
+		$columns = max( 1, min( 12, absint( $columns ) ) );
+		$img_w   = absint( $img_w );
+		$img_h   = absint( $img_h );
+		if ( $img_w < 1 || $img_h < 1 ) {
+			return array( 3, 3 );
+		}
+		$r        = $img_w / $img_h;
+		$best_w   = 3;
+		$best_h   = 3;
+		$best_err = abs( ( $best_w / $best_h ) - $r ) / $r;
+		// Start at h=2: h=1 yields one-row slivers that read tiny in the editor preview.
+		for ( $h = 2; $h <= 8; $h++ ) {
+			$w   = (int) round( $r * $h );
+			$w   = max( 1, min( $columns, $w ) );
+			$got = $w / $h;
+			$err = abs( $got - $r ) / $r;
+			if ( $err < $best_err ) {
+				$best_err = $err;
+				$best_w   = $w;
+				$best_h   = $h;
+			}
+		}
+		$w = max( 1, min( $columns, $best_w ) );
+		$h = max( 1, $best_h );
+
+		return $this->scale_custom_grid_spans_to_minimum_floor( $w, $h, $columns, 3, 8 );
+	}
+
+	/**
+	 * Default data-width / data-height grid units for a new image when the gallery is custom-grid.
+	 *
+	 * @param int $gallery_id Gallery post ID.
+	 * @param int $image_id   Attachment ID.
+	 * @return int[] { width, height }.
+	 */
+	private function get_default_tile_spans_for_new_image( $gallery_id, $image_id ) {
+		if ( 'custom-grid' !== $this->get_gallery_layout_type_string( $gallery_id ) ) {
+			return array( 2, 2 );
+		}
+		$meta = wp_get_attachment_metadata( $image_id );
+		if ( ! is_array( $meta ) || empty( $meta['width'] ) || empty( $meta['height'] ) ) {
+			return array( 3, 3 );
+		}
+		$columns     = $this->get_gallery_grid_column_count( $gallery_id );
+		list($w, $h) = $this->custom_grid_tile_spans_from_pixel_ratio(
+			(int) $meta['width'],
+			(int) $meta['height'],
+			$columns
+		);
+		/**
+		 * Filter spans [w,h] in grid units for newly added images in custom-grid galleries.
+		 *
+		 * @param int[] $spans      { width, height }.
+		 * @param int   $gallery_id Gallery ID.
+		 * @param int   $image_id   Attachment ID.
+		 * @param array $meta       Attachment metadata.
+		 */
+		return apply_filters(
+			'modula_custom_grid_new_image_tile_spans',
+			array( $w, $h ),
+			$gallery_id,
+			$image_id,
+			$meta
+		);
+	}
+
+	/**
+	 * REST: build Modula image payloads for the editor (replaces ajax_modula_add_images_ids).
+	 *
+	 * @param int   $gallery_id Gallery ID.
+	 * @param mixed $ids Attachment IDs (array or comma-separated string).
+	 * @return array|\WP_Error Map of id => image data.
+	 */
+	public function rest_add_images_payload( $gallery_id, $ids ) {
+		if ( ! $this->check_user_upload_rights() ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$gallery_id = absint( $gallery_id );
+		if ( ! $gallery_id ) {
+			return new \WP_Error(
+				'modula_no_gallery',
+				__( 'No gallery ID was provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		if ( is_string( $ids ) ) {
+			$ids = explode( ',', $ids );
+		}
+		if ( ! is_array( $ids ) || empty( $ids ) ) {
+			return new \WP_Error(
+				'modula_no_images',
+				__( 'No images were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		$modula_images = array();
+		foreach ( $ids as $image_id ) {
+			$image_id   = absint( $image_id );
+			$attachment = get_post( $image_id );
+			if ( ! $attachment ) {
+				continue;
+			}
+			list($def_w, $def_h)        = $this->get_default_tile_spans_for_new_image( $gallery_id, $image_id );
+			$image                      = array(
+				'id'          => $image_id,
+				'alt'         => sanitize_text_field( get_post_meta( $image_id, '_wp_attachment_image_alt', true ) ),
+				'title'       => sanitize_text_field( $attachment->post_title ),
+				'description' => wp_filter_post_kses( $attachment->post_content ),
+				'halign'      => 'center',
+				'valign'      => 'middle',
+				'link'        => '',
+				'target'      => '',
+				'width'       => $def_w,
+				'height'      => $def_h,
+				'filters'     => '',
+			);
+			$modula_images[ $image_id ] = $this->sanitize_image( $image );
+		}
+		if ( empty( $modula_images ) ) {
+			return new \WP_Error(
+				'modula_no_images',
+				__( 'No images were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		$this->notify_upload_errors( $gallery_id );
+		$notice = array(
+			'title'   => esc_html__( 'Import process completed.', 'modula-best-grid-gallery' ),
+			'message' => sprintf(
+				_n(
+					'Finished importing %d image.',
+					'Finished importing %d images.',
+					count( $modula_images ),
+					'modula-best-grid-gallery'
+				),
+				count( $modula_images )
+			),
+			'status'  => 'success',
+			'source'  => array(
+				'slug' => 'modula',
+				'name' => 'Modula',
+			),
+			'timed'   => 5000,
+		);
+		if ( class_exists( 'WPChill_Notifications' ) ) {
+			WPChill_Notifications::add_notification( 'zip-import', $notice );
+		}
+		return $modula_images;
+	}
+
+	/**
+	 * Build one sanitized modula-images row for an attachment (no notifications). Used by REST replace/patch.
+	 *
+	 * @param int $gallery_id Gallery post ID (for permission check parity with rest_add_images_payload).
+	 * @param int $image_id   Attachment ID.
+	 * @return array|\WP_Error Row shaped like modula-images entries.
+	 */
+	public function rest_build_single_image_row( $gallery_id, $image_id ) {
+		if ( ! $this->check_user_upload_rights() ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$gallery_id = absint( $gallery_id );
+		$image_id   = absint( $image_id );
+		if ( ! $gallery_id || ! $image_id ) {
+			return new \WP_Error(
+				'modula_no_images',
+				__( 'No images were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		$attachment = get_post( $image_id );
+		if ( ! $attachment ) {
+			return new \WP_Error(
+				'modula_no_images',
+				__( 'No images were provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		list($def_w, $def_h) = $this->get_default_tile_spans_for_new_image( $gallery_id, $image_id );
+		$image               = array(
+			'id'          => $image_id,
+			'alt'         => sanitize_text_field( get_post_meta( $image_id, '_wp_attachment_image_alt', true ) ),
+			'title'       => sanitize_text_field( $attachment->post_title ),
+			'description' => wp_filter_post_kses( $attachment->post_content ),
+			'halign'      => 'center',
+			'valign'      => 'middle',
+			'link'        => '',
+			'target'      => '',
+			'width'       => $def_w,
+			'height'      => $def_h,
+			'filters'     => '',
+		);
+		return $this->sanitize_image( $image );
+	}
+
+	/**
+	 * Write Modula “title”, “alt”, and “description” onto the media attachment (canonical store).
+	 * “description” maps to attachment post_content, matching {@see rest_build_single_image_row()}.
+	 *
+	 * @param int   $attachment_id Attachment post ID.
+	 * @param array $fields          Partial fields: optional keys title, alt, description (HTML allowed for description).
+	 * @return true|\WP_Error
+	 */
+	public function apply_modula_media_fields_to_attachment( $attachment_id, $fields ) {
+		$attachment_id = absint( $attachment_id );
+		if ( ! $attachment_id || ! is_array( $fields ) ) {
+			return new \WP_Error(
+				'modula_bad_attachment',
+				__( 'Invalid attachment.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+		if ( ! current_user_can( 'edit_post', $attachment_id ) ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You cannot edit this attachment.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$attachment = get_post( $attachment_id );
+		if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
+			return new \WP_Error(
+				'modula_bad_attachment',
+				__( 'Invalid attachment.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$post_data = array( 'ID' => $attachment_id );
+
+		if ( array_key_exists( 'title', $fields ) ) {
+			$title_write = modula_resolve_attachment_text_write(
+				sanitize_text_field( wp_unslash( $fields['title'] ) ),
+				(string) $attachment->post_title
+			);
+			if ( null !== $title_write ) {
+				$post_data['post_title'] = $title_write;
+			}
+		}
+		if ( array_key_exists( 'description', $fields ) ) {
+			$description_write = modula_resolve_attachment_text_write(
+				modula_sanitize_attachment_description_for_write( $fields['description'] ),
+				(string) $attachment->post_content
+			);
+			if ( null !== $description_write ) {
+				$post_data['post_content'] = $description_write;
+			}
+		}
+
+		if ( count( $post_data ) > 1 ) {
+			$result = wp_update_post( $post_data, true );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+		}
+
+		if ( array_key_exists( 'alt', $fields ) ) {
+			$existing_alt = get_post_meta( $attachment_id, '_wp_attachment_image_alt', true );
+			$alt_write    = modula_resolve_attachment_text_write(
+				sanitize_text_field( wp_unslash( $fields['alt'] ) ),
+				is_string( $existing_alt ) ? $existing_alt : ''
+			);
+			if ( null !== $alt_write ) {
+				update_post_meta(
+					$attachment_id,
+					'_wp_attachment_image_alt',
+					$alt_write
+				);
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Overwrite title / alt / description on a modula-images row from attachment post data (after attachment updates).
+	 *
+	 * Keys listed in $explicit_clear_keys stay '' on the gallery row so an intentional
+	 * clear is not undone when Media Library still holds non-empty text.
+	 *
+	 * @param array    $row                 Row being saved.
+	 * @param int      $attachment_id       Attachment ID.
+	 * @param string[] $explicit_clear_keys Keys among title, alt, description to keep empty.
+	 * @return array
+	 */
+	public function overlay_modula_row_attachment_text_from_post( $row, $attachment_id, $explicit_clear_keys = array() ) {
+		if ( ! is_array( $row ) ) {
+			return $row;
+		}
+		$attachment_id = absint( $attachment_id );
+		if ( ! $attachment_id ) {
+			return $row;
+		}
+		$attachment = get_post( $attachment_id );
+		if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
+			return $row;
+		}
+		if ( ! is_array( $explicit_clear_keys ) ) {
+			$explicit_clear_keys = array();
+		}
+		$row['title']       = modula_resolve_gallery_row_attachment_text_after_sync(
+			$attachment->post_title,
+			in_array( 'title', $explicit_clear_keys, true )
+		);
+		$row['alt']         = modula_resolve_gallery_row_attachment_text_after_sync(
+			get_post_meta( $attachment_id, '_wp_attachment_image_alt', true ),
+			in_array( 'alt', $explicit_clear_keys, true )
+		);
+		$row['description'] = modula_resolve_gallery_row_attachment_text_after_sync(
+			$attachment->post_content,
+			in_array( 'description', $explicit_clear_keys, true )
+		);
+		return $row;
+	}
+
+	/**
+	 * Sanitize a full modula-images list (same rules as per-row save).
+	 *
+	 * @param array $images Rows.
+	 * @return array
+	 */
+	public function sanitize_modula_images_list( $images ) {
+		if ( ! is_array( $images ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $images as $image ) {
+			if ( is_array( $image ) ) {
+				$out[] = $this->sanitize_image( $image );
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Sanitize one modula-images row.
+	 *
+	 * @param array $image Row.
+	 * @return array
+	 */
+	public function sanitize_modula_image_row( $image ) {
+		if ( ! is_array( $image ) ) {
+			return array();
+		}
+		return $this->sanitize_image( $image );
+	}
+
+	/**
+	 * REST: unzip an uploaded ZIP attachment to temp folders under uploads; returns folder paths.
+	 *
+	 * @param int $file_id Attachment ID.
+	 * @return array|\WP_Error
+	 */
+	public function rest_unzip_to_paths( $file_id ) {
+		if ( ! $this->check_user_upload_rights() ) {
+			return new \WP_Error(
+				'modula_forbidden',
+				__( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ),
+				array( 'status' => 403 )
+			);
+		}
+		$file_id = absint( $file_id );
+		if ( ! $file_id ) {
+			return new \WP_Error(
+				'modula_no_file',
+				__( 'No file was provided.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$file = get_attached_file( $file_id );
+		if ( ! class_exists( 'ZipArchive' ) ) {
+			$this->delete_atachment( $file_id, true );
+			return new \WP_Error(
+				'modula_no_zip',
+				__( 'ZIP extension is not installed on the server.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$zip        = new ZipArchive();
+		$zip_opened = $zip->open( $file );
+		if ( true !== $zip_opened ) {
+			$this->delete_atachment( $file_id, true );
+			return new \WP_Error(
+				'modula_zip_open',
+				__( 'Could not open ZIP file.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$allowed_mime_types = $this->define_allowed_mime_types();
+		$base               = pathinfo( $file, PATHINFO_DIRNAME );
+		$file_name          = pathinfo( $file, PATHINFO_FILENAME );
+		$timestamp          = time();
+		$unzip_path         = $base . '/' . $file_name . $timestamp;
+
+		require_once ABSPATH . '/wp-admin/includes/file.php';
+		WP_Filesystem();
+		global $wp_filesystem;
+
+		if ( ! $wp_filesystem->mkdir( $unzip_path, FS_CHMOD_DIR ) ) {
+			$zip->close();
+			$this->delete_atachment( $file_id, true );
+			return new \WP_Error(
+				'modula_mkdir',
+				__( 'Could not create extraction directory.', 'modula-best-grid-gallery' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		$unzip_path = realpath( $unzip_path );
+		if ( false === $unzip_path ) {
+			$zip->close();
+			$this->delete_atachment( $file_id, true );
+			return new \WP_Error(
+				'modula_path',
+				__( 'Invalid extraction path.', 'modula-best-grid-gallery' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		$has_valid_files = false;
+		$valid_files     = array();
+
+		for ( $i = 0; $i < $zip->numFiles; $i++ ) {
+			$stat      = $zip->statIndex( $i );
+			$full_path = $stat['name'];
+
+			if ( substr( $full_path, -1 ) === '/' ) {
+				continue;
+			}
+
+			$file_name_zip = basename( $full_path );
+			if ( empty( $file_name_zip ) ) {
+				continue;
+			}
+
+			if ( substr( $file_name_zip, 0, 2 ) === '._' ) {
+				continue;
+			}
+
+			if ( strpos( $full_path, '__MACOSX/' ) === 0 ) {
+				continue;
+			}
+
+			$file_type = wp_check_filetype( $file_name_zip, $allowed_mime_types );
+			if ( empty( $file_type['type'] ) ) {
+				continue;
+			}
+
+			$sanitized_path = $this->sanitize_zip_path( $full_path, $unzip_path );
+			if ( false === $sanitized_path ) {
+				continue;
+			}
+
+			$has_valid_files = true;
+			$valid_files[]   = array(
+				'index' => $i,
+				'path'  => $sanitized_path,
+			);
+		}
+
+		if ( ! $has_valid_files ) {
+			$zip->close();
+			$wp_filesystem->rmdir( $unzip_path, true );
+			$this->delete_atachment( $file_id, true );
+			return new \WP_Error(
+				'modula_zip_empty',
+				__( 'ZIP file does not contain any valid image files. Only image files are permitted.', 'modula-best-grid-gallery' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		foreach ( $valid_files as $file_data ) {
+			$content = $zip->getFromIndex( $file_data['index'] );
+			if ( false === $content ) {
+				continue;
+			}
+
+			$target_file = $file_data['path'];
+			$target_dir  = dirname( $target_file );
+
+			if ( ! $wp_filesystem->is_dir( $target_dir ) ) {
+				if ( ! $wp_filesystem->mkdir( $target_dir, FS_CHMOD_DIR, true ) ) {
+					continue;
+				}
+			}
+
+			if ( ! $wp_filesystem->put_contents( $target_file, $content, FS_CHMOD_FILE ) ) {
+				continue;
+			}
+		}
+
+		$zip->close();
+
+		$this->delete_atachment( $file_id, true );
+		$this->remove_empty_folders( $unzip_path, $unzip_path );
+
+		$folders    = array( $unzip_path );
+		$subfolders = $this->list_folders( $unzip_path, true );
+		if ( ! empty( $subfolders ) ) {
+			foreach ( $subfolders as $subfolder ) {
+				$folders[] = $subfolder['path'];
+			}
+		}
+
+		return $folders;
+	}
+
+	/**
+	 * Clear recorded upload errors for a gallery (admin notice).
+	 *
+	 * @param int $gallery_id Gallery ID.
+	 * @return void
+	 */
+	public function rest_dismiss_upload_errors( $gallery_id ) {
+		$gallery_id = absint( $gallery_id );
+		if ( ! $gallery_id || ! current_user_can( 'edit_post', $gallery_id ) ) {
+			return;
+		}
+		delete_post_meta( $gallery_id, $this->uploaded_error_files_meta );
+	}
+
+	/**
+	 * Folder import browse root (staging subdirectory under uploads by default; filter-overridable).
+	 *
+	 * @return string
+	 */
+	public function get_folder_import_browse_root() {
+		$uploads = wp_upload_dir();
+		$basedir = isset( $uploads['basedir'] ) ? (string) $uploads['basedir'] : '';
+		$default = Modula_Folder_Import_Path::default_browse_root( $basedir );
+		/**
+		 * Filter the folder import browse root. Default is a staging subdirectory under uploads, not the whole tree.
+		 *
+		 * @param string $default Staging path under `wp_upload_dir()['basedir']`.
+		 */
+		$root = (string) apply_filters( 'modula_gallery_upload_default_dir', $default );
+		if ( '' !== $default && wp_normalize_path( untrailingslashit( $root ) ) === wp_normalize_path( untrailingslashit( $default ) ) ) {
+			wp_mkdir_p( $default );
+		}
+		return $root;
+	}
+
+	/**
+	 * Set the default directory for the media browser.
 	 *
 	 * @return void
 	 *
 	 * @since 2.11.0
 	 */
 	public function set_default_browser_dir() {
-		$uploads           = wp_upload_dir();
-		$this->default_dir = apply_filters( 'modula_gallery_upload_default_dir', $uploads['basedir'] );
+		$this->default_dir = $this->get_folder_import_browse_root();
 	}
 
 	/**
@@ -220,43 +1091,6 @@ class Modula_Gallery_Upload {
 	}
 
 	/**
-	 * List browser folders
-	 *
-	 * @access public
-	 * @return void
-	 *
-	 * @since 2.11.0
-	 */
-	public function ajax_list_folders() {
-		// Check Nonce
-		check_ajax_referer( 'list-files', 'security' );
-
-		// Check user rights
-		if ( ! $this->check_user_upload_rights() ) {
-			wp_send_json_error( __( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ) );
-		}
-
-		if ( ! isset( $_POST['path'] ) ) {
-			wp_send_json_error( __( 'No path was provided.', 'modula-best-grid-gallery' ) );
-		}
-		$checked = false;
-		if ( ! empty( $_POST['input-checked'] ) && 'true' === $_POST['input-checked'] ) {
-			$checked = true;
-		}
-
-		$path = sanitize_text_field( wp_unslash( $_POST['path'] ) );
-		// List all files
-		$files = $this->list_folders( $path );
-		foreach ( $files as $found_file ) {
-			// Multi-byte-safe pathinfo
-			$file = $this->mb_pathinfo( $found_file['path'] );
-			echo '<li><input type="checkbox" value="' . esc_attr( trailingslashit( $file['dirname'] ) ) . esc_attr( $file['basename'] ) . '" ' . checked( $checked, true, false ) . '><a href="#" class="folder" data-path="' . esc_attr( trailingslashit( $file['dirname'] ) ) . esc_attr( $file['basename'] ) . '">' . esc_html( $file['basename'] ) . '</a></li>';
-		}
-
-		die();
-	}
-
-	/**
 	 * Media browser, for the folder upload functionality
 	 *
 	 * @access public
@@ -328,6 +1162,9 @@ class Modula_Gallery_Upload {
 		if ( 'modula-gallery' !== $current_screen->post_type ) {
 			return;
 		}
+		if ( class_exists( '\Modula\V2\Admin\Gallery_Takeover_Admin' ) && \Modula\V2\Admin\Gallery_Takeover_Admin::should_use_takeover() ) {
+			return;
+		}
 		$this->required_scripts();
 		wp_enqueue_style( 'media-upload' );
 		wp_enqueue_style( 'thickbox' );
@@ -351,58 +1188,6 @@ class Modula_Gallery_Upload {
 	}
 
 	/**
-	 * Paths validation
-	 *
-	 * @return void
-	 *
-	 * @since 2.11.0
-	 */
-	public function ajax_check_paths() {
-		// Check Nonce
-		check_ajax_referer( 'list-files', 'security' );
-
-		// Check user rights
-		if ( ! $this->check_user_upload_rights() ) {
-			wp_send_json_error( __( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ) );
-		}
-
-		if ( ! isset( $_POST['paths'] ) ) {
-			wp_send_json_error( __( 'No paths were provided.', 'modula-best-grid-gallery' ) );
-		}
-		if ( isset( $_POST['post_ID'] ) ) {
-			$this->uploaded_error_files = $this->get_uploaded_error_files( absint( $_POST['post_ID'] ) );
-		}
-		// Sanitize the paths.
-		$paths   = json_decode( wp_unslash( $_POST['paths'] ), true );
-		$folders = array();
-		if ( is_array( $paths ) ) {
-			foreach ( $paths as $path ) {
-				if ( $this->check_folder( $path ) ) {
-					// Add folder path to the array
-					$folders[] = $path;
-				} else {
-					$this->uploaded_error_files['folders'][] = $path;
-				}
-			}
-		} elseif ( $this->check_folder( $paths ) ) {
-			// Add folder path to the array
-			$folders[] = $paths;
-		} else {
-			$this->uploaded_error_files['folders'][] = $paths;
-		}
-
-		$prev_uploaded_files = $this->get_uploaded_error_files( absint( $_POST['post_ID'] ) );
-		$uploaded_files      = array_merge( $prev_uploaded_files, $this->uploaded_error_files );
-		$this->update_uploaded_error_files( absint( $_POST['post_ID'] ), $uploaded_files );
-		// If no valid paths were provided, return an error
-		if ( empty( $folders ) ) {
-			wp_send_json_error( __( 'No valid paths were provided.', 'modula-best-grid-gallery' ) );
-		}
-		// Return the files
-		wp_send_json_success( $folders );
-	}
-
-	/**
 	 * Check for empty or non folders
 	 *
 	 * @param string $folder
@@ -417,7 +1202,7 @@ class Modula_Gallery_Upload {
 		$upload_dir = wp_upload_dir();
 		$base_path  = realpath( $upload_dir['basedir'] );
 
-		if ( ! $real_path || ! $base_path || 0 !== strpos( $real_path, $base_path ) ) {
+		if ( ! $real_path || ! $base_path || ! Modula_Folder_Import_Path::is_path_under_root( $real_path, $base_path ) ) {
 			return false;
 		}
 
@@ -441,6 +1226,9 @@ class Modula_Gallery_Upload {
 	 * @since 2.11.0
 	 */
 	public function get_files( $folder ) {
+		if ( ! $this->check_folder( $folder ) ) {
+			return array();
+		}
 
 		// A listing of all files and dirs in $folder, excepting . and ..
 		// By default, the sorted order is alphabetical in ascending order
@@ -453,6 +1241,9 @@ class Modula_Gallery_Upload {
 			}
 			$file_path = $folder . '/' . $file;
 			if ( ! $this->check_file( $file_path ) ) {
+				continue;
+			}
+			if ( ! $this->is_folder_import_browse_file_visible( $file_path ) ) {
 				continue;
 			}
 			$modula_files[] = $file_path;
@@ -491,47 +1282,6 @@ class Modula_Gallery_Upload {
 	/**
 	 * File validation
 	 *
-	 * @return void
-	 *
-	 * @since 2.11.0
-	 */
-	public function ajax_check_files() {
-		// Check Nonce
-		check_ajax_referer( 'list-files', 'security' );
-
-		// Check user rights
-		if ( ! $this->check_user_upload_rights() ) {
-			wp_send_json_error( __( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ) );
-		}
-
-		if ( ! isset( $_POST['paths'] ) || empty( $_POST['paths'] ) ) {
-			wp_send_json_error( __( 'No paths were provided.', 'modula-best-grid-gallery' ) );
-		}
-
-		$paths = json_decode( wp_unslash( $_POST['paths'] ) );
-		$files = array();
-		if ( is_array( $paths ) ) {
-			$paths = array_map( 'sanitize_text_field', $paths );
-			// Cycle through paths and get files.
-			foreach ( $paths as $path ) {
-				$files = array_merge( $files, $this->get_files( $path ) );
-			}
-		} else {
-			$paths = sanitize_text_field( $paths );
-			$files = $this->get_files( $paths );
-		}
-
-		// If no valid paths were provided, return an error
-		if ( empty( $files ) ) {
-			wp_send_json_error( __( 'No valid files were provided.', 'modula-best-grid-gallery' ) );
-		}
-		// Return the files
-		wp_send_json_success( $files );
-	}
-
-	/**
-	 * File validation
-	 *
 	 * @param string $file
 	 * @return bool
 	 *
@@ -552,56 +1302,6 @@ class Modula_Gallery_Upload {
 	}
 
 	/**
-	 * Import file from a folder to the media library
-	 *
-	 * @return void
-	 *
-	 * @since 2.11.0
-	 */
-	public function ajax_import_file() {
-		// Check Nonce
-		check_ajax_referer( 'list-files', 'security' );
-
-		// Check user rights
-		if ( ! $this->check_user_upload_rights() ) {
-			wp_send_json_error( __( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ) );
-		}
-
-		if ( ! isset( $_POST['file'] ) || empty( $_POST['file'] ) ) {
-			wp_send_json_error( __( 'No files were provided.', 'modula-best-grid-gallery' ) );
-		}
-
-		$file = wp_unslash( $_POST['file'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-
-		$real_path    = realpath( $file );
-		$uploads_dir  = wp_upload_dir();
-		$allowed_base = realpath( $uploads_dir['basedir'] );
-
-		if ( false === $real_path || false === $allowed_base || 0 !== strpos( $real_path, $allowed_base ) ) {
-			wp_send_json_error( __( 'Invalid file path.', 'modula-best-grid-gallery' ) );
-		}
-
-		if ( ! file_exists( $real_path ) || ! is_readable( $real_path ) ) {
-			wp_send_json_error( __( 'File does not exist or is not readable.', 'modula-best-grid-gallery' ) );
-		}
-
-		$delete_file = isset( $_POST['delete_files'] ) && 'false' !== sanitize_text_field( wp_unslash( $_POST['delete_files'] ) ) ? true : false;
-
-		$attachment_id = $this->upload_image( $real_path, $delete_file );
-		if ( ! $attachment_id ) {
-			$post_id = isset( $_POST['post_ID'] ) ? absint( $_POST['post_ID'] ) : 0;
-			if ( $post_id > 0 ) {
-				$prev_uploaded_files       = $this->get_uploaded_error_files( $post_id );
-				$uploaded_files['files'][] = $file;
-				$this->update_uploaded_error_files( $post_id, array_merge( $prev_uploaded_files, $uploaded_files ) );
-			}
-			wp_send_json_error( __( 'The file could not be uploaded.', 'modula-best-grid-gallery' ) );
-		}
-		// Return the image ID
-		wp_send_json_success( $attachment_id );
-	}
-
-	/**
 	 * Upload image to the media library
 	 *
 	 * @param string $file_path The path to the file
@@ -614,103 +1314,21 @@ class Modula_Gallery_Upload {
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/media.php';
-		$attachment_id = false;
-		if ( $delete_file ) {
-			// Add the file to the media library.
-			$attachment_id = media_handle_sideload(
-				array(
-					'name'     => basename( $file_path ),
-					'tmp_name' => $file_path,
-				),
-				0
-			);
-			// If the file was added successfully, return the attachment ID.
-			if ( is_wp_error( $attachment_id ) ) {
-				$this->uploaded_error_files['files'][] = $file_path;
-				return false;
-			}
-		} else {
-			$attachment_id = $this->handle_sideload_without_deleting(
-				array(
-					'name'     => basename( $file_path ),
-					'tmp_name' => $file_path,
-				)
-			);
-			if ( is_wp_error( $attachment_id ) ) {
-				$this->uploaded_error_files['files'][] = $file_path;
-				return false;
-			}
-		}
-		// Return the attachment ID.
-		return $attachment_id;
-	}
-
-	/**
-	 * Update the gallery modula-images post meta
-	 *
-	 * @return void
-	 *
-	 * @since 2.11.0
-	 */
-	public function ajax_modula_add_images_ids() {
-		// Check Nonce
-		check_ajax_referer( 'list-files', 'security' );
-
-		// Check user rights
-		if ( ! $this->check_user_upload_rights() ) {
-			wp_send_json_error( __( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ) );
-		}
-
-		if ( ! isset( $_POST['galleryID'] ) || empty( $_POST['galleryID'] ) ) {
-			wp_send_json_error( __( 'No gallery ID was provided.', 'modula-best-grid-gallery' ) );
-		}
-
-		if ( ! isset( $_POST['ids'] ) || empty( $_POST['ids'] ) ) {
-			wp_send_json_error( __( 'No images were provided.', 'modula-best-grid-gallery' ) );
-		}
-
-		$gallery_id    = absint( $_POST['galleryID'] );
-		$images        = wp_unslash( $_POST['ids'] );
-		$images        = explode( ',', $images );
-		$modula_images = array();
-
-		// Cycle through images and sanitize them
-		foreach ( $images as $image_id ) {
-			$attachment                 = get_post( $image_id );
-			$image                      = array(
-				'id'          => absint( $image_id ),
-				'alt'         => sanitize_text_field( get_post_meta( $image_id, '_wp_attachment_image_alt', true ) ),
-				'title'       => sanitize_text_field( $attachment->post_title ),
-				'description' => wp_filter_post_kses( $attachment->post_content ),
-				'halign'      => 'center',
-				'valign'      => 'middle',
-				'link'        => '',
-				'target'      => '',
-				'width'       => 2,
-				'height'      => 2,
-				'filters'     => '',
-				'url'         => wp_get_attachment_image_url( $image_id, 'full' ),
-			);
-			$modula_images[ $image_id ] = $this->sanitize_image( $image );
-		}
-
-		$this->notify_upload_errors( $gallery_id );
-
-		$notice = array(
-			'title'   => esc_html__( 'Import process completed.', 'modula-best-grid-gallery' ),
-			'message' => sprintf( _n( 'Finished importing %d image.', 'Finished importing %d images.', count( $modula_images ), 'modula-best-grid-gallery' ), count( $modula_images ) ),
-			'status'  => 'success',
-			'source'  => array(
-				'slug' => 'modula',
-				'name' => 'Modula',
-			),
-			'timed'   => 5000,
+		// Always copy to a temp file first — never pass a library/orphan path as sideload tmp_name.
+		$attachment_id = $this->handle_sideload_without_deleting(
+			array(
+				'name'     => basename( $file_path ),
+				'tmp_name' => $file_path,
+			)
 		);
-
-		WPChill_Notifications::add_notification( 'zip-import', $notice );
-
-		// Return the image ID
-		wp_send_json_success( $modula_images );
+		if ( is_wp_error( $attachment_id ) ) {
+			$this->uploaded_error_files['files'][] = $file_path;
+			return false;
+		}
+		if ( $delete_file ) {
+			$this->maybe_delete_folder_import_source( $file_path );
+		}
+		return $attachment_id;
 	}
 
 	/**
@@ -739,9 +1357,18 @@ class Modula_Gallery_Upload {
 				'target',
 				'width',
 				'height',
+				'gridX',
+				'gridY',
+				'gridLocked',
 				'togglelightbox',
 				'hide_title',
-				'url',
+				'focal_x',
+				'focal_y',
+				'focal_crop_x',
+				'focal_crop_y',
+				'focal_crop_w',
+				'focal_crop_h',
+				'tile_image_fit',
 			)
 		);
 
@@ -754,6 +1381,18 @@ class Modula_Gallery_Upload {
 					case 'width':
 					case 'height':
 						$new_image[ $attribute ] = absint( $image[ $attribute ] );
+						break;
+					case 'gridX':
+					case 'gridY':
+						// Empty string is "no cell assigned" for custom grid; absint( '' ) === 0 would collide with tile at (0,0).
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = absint( $image[ $attribute ] );
+						break;
+					case 'gridLocked':
+						$new_image[ $attribute ] = absint( $image[ $attribute ] ) ? 1 : 0;
 						break;
 					case 'title':
 					case 'description':
@@ -789,6 +1428,57 @@ class Modula_Gallery_Upload {
 							$new_image[ $attribute ] = $image[ $attribute ];
 						} else {
 							$new_image[ $attribute ] = 'middle';
+						}
+						break;
+					case 'focal_x':
+					case 'focal_y':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$v = floatval( $image[ $attribute ] );
+						if ( ! is_finite( $v ) ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = min( 1, max( 0, $v ) );
+						break;
+					case 'focal_crop_x':
+					case 'focal_crop_y':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$v = floatval( $image[ $attribute ] );
+						if ( ! is_finite( $v ) ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = min( 1, max( 0, $v ) );
+						break;
+					case 'focal_crop_w':
+					case 'focal_crop_h':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$v = floatval( $image[ $attribute ] );
+						if ( ! is_finite( $v ) || $v <= 0 ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = min( 1, max( 1e-6, $v ) );
+						break;
+					case 'tile_image_fit':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$fit = sanitize_text_field( $image[ $attribute ] );
+						if ( in_array( $fit, array( 'contain', 'cover' ), true ) ) {
+							$new_image[ $attribute ] = $fit;
+						} else {
+							$new_image[ $attribute ] = '';
 						}
 						break;
 					default:
@@ -827,8 +1517,9 @@ class Modula_Gallery_Upload {
 			array(
 				'browseFolder'          => __( 'Browse for a folder', 'modula-best-grid-gallery' ),
 				'noSubfolders'          => __( 'No subfolders found', 'modula-best-grid-gallery' ),
-				'security'              => wp_create_nonce( 'list-files' ),
-				'ajaxUrl'               => admin_url( 'admin-ajax.php' ),
+				'restUrl'               => trailingslashit( rest_url( 'modula/v2/' ) ),
+				'restNonce'             => wp_create_nonce( 'wp_rest' ),
+				'security'              => wp_create_nonce( 'wp_rest' ),
 				'noFoldersSelected'     => __( 'No folder(s) selected', 'modula-best-grid-gallery' ),
 				'updatingGallery'       => __( 'Updating gallery. Please wait...', 'modula-best-grid-gallery' ),
 				'galleryUpdated'        => __( 'Gallery updated. Syncronizing gallery view...', 'modula-best-grid-gallery' ),
@@ -1023,152 +1714,6 @@ class Modula_Gallery_Upload {
 	}
 
 	/**
-	 * Handle the file unzip process
-	 *
-	 * @return void
-	 *
-	 * @since 2.11.0
-	 */
-	public function ajax_unzip_file() {
-		// Check Nonce
-		check_ajax_referer( 'list-files', 'security' );
-
-		// Check user rights.
-		if ( ! $this->check_user_upload_rights() ) {
-			wp_send_json_error( __( 'You do not have the rights to upload files.', 'modula-best-grid-gallery' ) );
-		}
-		if ( empty( $_POST['fileID'] ) ) {
-			wp_send_json_error( __( 'No file was provided.', 'modula-best-grid-gallery' ) );
-		}
-
-		// Get the file ID.
-		$file_id = absint( $_POST['fileID'] );
-		// Get the file path.
-		$file = get_attached_file( $file_id );
-
-		// Validate that this is actually a zip file
-		if ( ! class_exists( 'ZipArchive' ) ) {
-			$this->delete_atachment( $file_id, true );
-			wp_send_json_error( __( 'ZIP extension is not installed on the server.', 'modula-best-grid-gallery' ) );
-		}
-
-		$zip        = new ZipArchive();
-		$zip_opened = $zip->open( $file );
-		if ( true !== $zip_opened ) {
-			$this->delete_atachment( $file_id, true );
-			wp_send_json_error( __( 'Could not open ZIP file.', 'modula-best-grid-gallery' ) );
-		}
-
-		$allowed_mime_types = $this->define_allowed_mime_types();
-
-		$base       = pathinfo( $file, PATHINFO_DIRNAME );
-		$file_name  = pathinfo( $file, PATHINFO_FILENAME );
-		$timestamp  = time();
-		$unzip_path = $base . '/' . $file_name . $timestamp;
-
-		require_once ABSPATH . '/wp-admin/includes/file.php';
-		WP_Filesystem();
-		global $wp_filesystem;
-
-		if ( ! $wp_filesystem->mkdir( $unzip_path, FS_CHMOD_DIR ) ) {
-			$zip->close();
-			$this->delete_atachment( $file_id, true );
-			wp_send_json_error( __( 'Could not create extraction directory.', 'modula-best-grid-gallery' ) );
-		}
-
-		$unzip_path = realpath( $unzip_path );
-		if ( false === $unzip_path ) {
-			$zip->close();
-			$this->delete_atachment( $file_id, true );
-			wp_send_json_error( __( 'Invalid extraction path.', 'modula-best-grid-gallery' ) );
-		}
-
-		$has_valid_files = false;
-		$valid_files     = array();
-
-		for ( $i = 0; $i < $zip->numFiles; $i++ ) {
-			$stat      = $zip->statIndex( $i );
-			$full_path = $stat['name'];
-
-			if ( substr( $full_path, -1 ) === '/' ) {
-				continue;
-			}
-
-			$file_name = basename( $full_path );
-			if ( empty( $file_name ) ) {
-				continue;
-			}
-
-			if ( substr( $file_name, 0, 2 ) === '._' ) {
-				continue;
-			}
-
-			if ( strpos( $full_path, '__MACOSX/' ) === 0 ) {
-				continue;
-			}
-
-			$file_type = wp_check_filetype( $file_name, $allowed_mime_types );
-			if ( empty( $file_type['type'] ) ) {
-				continue;
-			}
-
-			$sanitized_path = $this->sanitize_zip_path( $full_path, $unzip_path );
-			if ( false === $sanitized_path ) {
-				continue;
-			}
-
-			$has_valid_files = true;
-			$valid_files[]   = array(
-				'index' => $i,
-				'path'  => $sanitized_path,
-			);
-		}
-
-		if ( ! $has_valid_files ) {
-			$zip->close();
-			$wp_filesystem->rmdir( $unzip_path, true );
-			$this->delete_atachment( $file_id, true );
-			wp_send_json_error( __( 'ZIP file does not contain any valid image files. Only image files are permitted.', 'modula-best-grid-gallery' ) );
-		}
-
-		foreach ( $valid_files as $file_data ) {
-			$content = $zip->getFromIndex( $file_data['index'] );
-			if ( false === $content ) {
-				continue;
-			}
-
-			$target_file = $file_data['path'];
-			$target_dir  = dirname( $target_file );
-
-			if ( ! $wp_filesystem->is_dir( $target_dir ) ) {
-				if ( ! $wp_filesystem->mkdir( $target_dir, FS_CHMOD_DIR, true ) ) {
-					continue;
-				}
-			}
-
-			if ( ! $wp_filesystem->put_contents( $target_file, $content, FS_CHMOD_FILE ) ) {
-				continue;
-			}
-		}
-
-		$zip->close();
-
-		$this->delete_atachment( $file_id, true );
-		$this->remove_empty_folders( $unzip_path, $unzip_path );
-
-		$folders    = array( $unzip_path );
-		$subfolders = $this->list_folders( $unzip_path, true );
-		if ( ! empty( $subfolders ) ) {
-			foreach ( $subfolders as $subfolder ) {
-				$folders[] = $subfolder['path'];
-			}
-		}
-
-		// Send the unzip path.
-		wp_send_json_success( $folders );
-	}
-
-	/**
 	 * Sanitize ZIP file path to prevent path traversal attacks
 	 *
 	 * @param string $zip_path The path from the ZIP archive
@@ -1245,7 +1790,7 @@ class Modula_Gallery_Upload {
 		}
 		ob_start();
 		?>
-		<p><?php echo wp_kses_post( sprintf( __( 'Some files could not be uploaded in <a href="%1$s" target="_blank">gallery ID %2$s</a>. Please check the following paths:', 'modula-best-grid-gallery' ), esc_url( admin_url( 'post.php?post=' . absint( $gallery_id ) . '&action=edit#!modula-general' ) ), $gallery_id ) ); ?></p>
+		<p><?php echo wp_kses_post( sprintf( __( 'Some files could not be uploaded in <a href="%1$s" target="_blank">gallery ID %2$s</a>. Please check the following paths:', 'modula-best-grid-gallery' ), esc_url( admin_url( 'post.php?post=' . absint( $gallery_id ) . '&action=edit#!layout' ) ), $gallery_id ) ); ?></p>
 		<ul>
 			<?php
 			if ( ! empty( $uploaded_files['folders'] ) ) {
@@ -1324,6 +1869,165 @@ class Modula_Gallery_Upload {
 			return false;
 		}
 		return wp_delete_attachment( $file_id, $force );
+	}
+
+	/**
+	 * Resolve a realpath under uploads to an attachment ID, null (orphan), or 'ambiguous'.
+	 *
+	 * @param string $real_path Absolute path already confirmed under uploads.
+	 * @return int|string|null
+	 */
+	private function resolve_folder_import_attachment( $real_path ) {
+		$uploads = wp_upload_dir();
+		$base    = isset( $uploads['basedir'] ) ? realpath( $uploads['basedir'] ) : false;
+		if ( false === $base ) {
+			return 'ambiguous';
+		}
+		$relative = Modula_Folder_Import_Path::uploads_relative_from_real( $real_path, $base );
+		if ( '' === $relative ) {
+			return null;
+		}
+		$catalog = $this->folder_import_owned_files_catalog( $relative );
+		if ( false === $catalog ) {
+			return 'ambiguous';
+		}
+		return Modula_Folder_Import_Path::resolve_attachment_id( $relative, $catalog );
+	}
+
+	/**
+	 * @param string $relative Uploads-relative path.
+	 * @return array<int, string[]>|false Catalog, or false when lookup cannot be trusted.
+	 */
+	private function folder_import_owned_files_catalog( $relative ) {
+		$ids = $this->folder_import_candidate_attachment_ids( $relative );
+		if ( false === $ids ) {
+			return false;
+		}
+		$catalog = array();
+		foreach ( $ids as $id ) {
+			$attached       = get_post_meta( $id, '_wp_attached_file', true );
+			$meta           = wp_get_attachment_metadata( $id );
+			$catalog[ $id ] = Modula_Folder_Import_Path::owned_uploads_relatives(
+				is_string( $attached ) ? $attached : '',
+				is_array( $meta ) ? $meta : array()
+			);
+		}
+		return $catalog;
+	}
+
+	/**
+	 * Candidate attachment IDs that might own this uploads-relative file.
+	 *
+	 * @param string $relative Uploads-relative path.
+	 * @return int[]|false
+	 */
+	private function folder_import_candidate_attachment_ids( $relative ) {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return false;
+		}
+		$relative = Modula_Folder_Import_Path::normalize_uploads_relative( $relative );
+		if ( '' === $relative ) {
+			return array();
+		}
+
+		$ids    = array();
+		$values = $this->folder_import_relative_lookup_values( $relative );
+		foreach ( $values as $value ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- path→attachment authz lookup.
+			$found = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT post_id FROM $wpdb->postmeta WHERE meta_key = %s AND meta_value = %s",
+					'_wp_attached_file',
+					$value
+				)
+			);
+			if ( ! is_array( $found ) ) {
+				return false;
+			}
+			$ids = array_merge( $ids, $found );
+		}
+
+		$dir = dirname( $relative );
+		if ( '.' !== $dir && '' !== $dir ) {
+			$like    = $wpdb->esc_like( $dir . '/' ) . '%';
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- same-directory intermediate/thumbnail owners.
+			$dir_ids = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT post_id FROM $wpdb->postmeta WHERE meta_key = %s AND meta_value LIKE %s",
+					'_wp_attached_file',
+					$like
+				)
+			);
+			if ( ! is_array( $dir_ids ) ) {
+				return false;
+			}
+			$ids = array_merge( $ids, $dir_ids );
+		}
+
+		$ids = array_values( array_unique( array_filter( array_map( 'absint', $ids ) ) ) );
+		return $ids;
+	}
+
+	/**
+	 * Exact _wp_attached_file values to query for a path (primary, stripped size, scaled/rotated).
+	 *
+	 * @param string $relative Uploads-relative path.
+	 * @return string[]
+	 */
+	private function folder_import_relative_lookup_values( $relative ) {
+		$relative = Modula_Folder_Import_Path::normalize_uploads_relative( $relative );
+		$values   = array( $relative );
+		$stripped = preg_replace( '/-\d+x\d+(?=\.[^.]+$)/', '', $relative );
+		if ( is_string( $stripped ) && $stripped !== $relative ) {
+			$values[] = $stripped;
+		}
+		$bases = array_unique( $values );
+		foreach ( $bases as $base ) {
+			foreach ( array( '-scaled', '-rotated' ) as $suffix ) {
+				$removed = preg_replace( '/' . preg_quote( $suffix, '/' ) . '(?=\.[^.]+$)/', '', $base );
+				if ( is_string( $removed ) && $removed !== $base ) {
+					$values[] = $removed;
+				}
+				$added = preg_replace( '/(\.[^.]+)$/', $suffix . '$1', $base );
+				if ( is_string( $added ) && $added !== $base ) {
+					$values[] = $added;
+				}
+			}
+		}
+		return array_values( array_unique( $values ) );
+	}
+
+	/**
+	 * @param string $file_path Absolute or folder-relative file path.
+	 * @return bool
+	 */
+	private function is_folder_import_browse_file_visible( $file_path ) {
+		$real = realpath( $file_path );
+		if ( false === $real ) {
+			return false;
+		}
+		$resolved = $this->resolve_folder_import_attachment( $real );
+		return Modula_Folder_Import_Path::is_browse_file_visible( $resolved, 'current_user_can' );
+	}
+
+	/**
+	 * Unlink a Folder import source after successful sideload, only when it is still under uploads.
+	 *
+	 * @param string $file_path Source path passed to sideload.
+	 * @return void
+	 */
+	private function maybe_delete_folder_import_source( $file_path ) {
+		$real    = realpath( $file_path );
+		$uploads = wp_upload_dir();
+		$base    = isset( $uploads['basedir'] ) ? realpath( $uploads['basedir'] ) : false;
+		if ( false === $real || false === $base || ! Modula_Folder_Import_Path::is_path_under_root( $real, $base ) ) {
+			return;
+		}
+		if ( ! is_file( $real ) ) {
+			return;
+		}
+		wp_delete_file( $real );
 	}
 }
 

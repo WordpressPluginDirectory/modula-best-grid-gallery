@@ -123,7 +123,8 @@ var react = __webpack_require__(540);
 ;// ./assets/src/js/components/ModulaGallerySearch.js
 
 const {
-  useEffect
+  useEffect,
+  useRef
 } = wp.element;
 const ModulaGallerySearch = props => {
   const {
@@ -132,8 +133,12 @@ const ModulaGallerySearch = props => {
     options,
     galleries
   } = props;
+  const inputRef = useRef(null);
   useEffect(() => {
-    let galleriesArray = [];
+    if (!inputRef.current) {
+      return undefined;
+    }
+    const galleriesArray = [];
     if (galleries != undefined && 0 == galleriesArray.length) {
       galleries.forEach(gallery => {
         galleriesArray.push({
@@ -142,7 +147,8 @@ const ModulaGallerySearch = props => {
         });
       });
     }
-    jQuery('.modula-gallery-input').selectize({
+    const $input = jQuery(inputRef.current);
+    $input.selectize({
       valueField: 'value',
       labelField: 'label',
       searchField: ['label', 'value'],
@@ -152,13 +158,17 @@ const ModulaGallerySearch = props => {
       preload: true,
       allowEmptyOptions: true,
       closeAfterSelect: true,
+      // Portal outside `.modula-block-preview { overflow: hidden }` so the
+      // list can scroll without clipping or closing on scrollbar click.
+      dropdownParent: 'body',
+      dropdownClass: 'selectize-dropdown modula-gallery-picker-dropdown',
       options: options.concat(galleriesArray),
       render: {
-        option: function (item, escape) {
+        option(item, escape) {
           return '<div>' + '<span className="title">' + item.label + '<span className="name"> (#' + escape(item.value) + ')</span>' + '</div>';
         }
       },
-      load: function (query, callback) {
+      load(query, callback) {
         if (!query.length) {
           return callback();
         }
@@ -179,8 +189,14 @@ const ModulaGallerySearch = props => {
         onIdChange(value);
       }
     });
+    return () => {
+      if ($input[0] && $input[0].selectize) {
+        $input[0].selectize.destroy();
+      }
+    };
   }, []);
   return /*#__PURE__*/React.createElement("input", {
+    ref: inputRef,
     className: "modula-gallery-input",
     defaultValue: '0' == id ? '' : id
   });
@@ -406,30 +422,31 @@ const ModulaGalleryImageInner = props => {
     hideSocial,
     index
   } = props;
-  let effectArray = ['tilt_1', 'tilt_3', 'tilt_7'],
+  const legacyHover = !settings.hover_builder || typeof settings.hover_builder !== 'object';
+  const effectArray = ['tilt_1', 'tilt_3', 'tilt_7'],
     overlayArray = ['tilt_3', 'tilt_7'],
     svgArray = ['tilt_1', 'tilt_7'],
     jtgBody = ['lily', 'centered-bottom', 'sadie', 'ruby', 'bubba', 'dexter', 'chico', 'ming'];
   return [/*#__PURE__*/React.createElement(ModulaGalleryImageInner_Fragment, {
     key: index
-  }, effectArray.includes(settings.effect) && /*#__PURE__*/React.createElement("div", {
+  }, legacyHover && effectArray.includes(settings.effect) && /*#__PURE__*/React.createElement("div", {
     className: "tilter__deco tilter__deco--shine"
-  }, /*#__PURE__*/React.createElement("div", null)), overlayArray.includes(settings.effect) && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", null)), legacyHover && overlayArray.includes(settings.effect) && /*#__PURE__*/React.createElement("div", {
     className: "tilter__deco tilter__deco--overlay"
-  }), svgArray.includes(settings.effect) && /*#__PURE__*/React.createElement("div", {
+  }), legacyHover && svgArray.includes(settings.effect) && /*#__PURE__*/React.createElement("div", {
     className: "tilter__deco tilter__deco--lines"
   }), /*#__PURE__*/React.createElement("div", {
     className: "figc"
   }, /*#__PURE__*/React.createElement("div", {
     className: "figc-inner"
   }, '0' == settings.hide_title && !hideTitle && /*#__PURE__*/React.createElement("div", {
-    className: 'jtg-title'
+    className: 'modula-title'
   }, " ", img.title, " "), /*#__PURE__*/React.createElement("div", {
-    className: jtgBody.includes(settings.effect) ? 'jtg-body' : ''
+    className: legacyHover && jtgBody.includes(settings.effect) ? 'modula-body' : ''
   }, '0' == settings.hide_description && !hideDescription && /*#__PURE__*/React.createElement("p", {
     className: "description"
   }, ' ', 0 != img.description.length && img.description, ' '), !hideSocial && '1' == settings.enableSocial && /*#__PURE__*/React.createElement("div", {
-    className: "jtg-social"
+    className: "modula-social"
   }, '1' == settings.enableTwitter && /*#__PURE__*/React.createElement("a", {
     className: "modula-icon-twitter",
     href: "#"
@@ -451,7 +468,67 @@ const ModulaGalleryImageInner = props => {
   }, ' ', "$", utils_icons.email, ' '))))))];
 };
 /* harmony default export */ const components_ModulaGalleryImageInner = (ModulaGalleryImageInner);
+;// ./assets/src/js/utils/buildModulaItemHoverClassNames.js
+/**
+ * Gallery item outer classes: composable hover v2 (`hover_builder`) or legacy `effect-*`.
+ *
+ * @param {Record<string, unknown>} settings Block / gallery settings (flat).
+ * @return {string} Space-separated classes (includes `modula-item`).
+ */
+
+/** Layouts that never use below-image captions (keep hover title/caption slots). */
+const GALLERY_TYPES_WITHOUT_BELOW_IMAGE_CAPTIONS = ['story', 'bnb', 'parallax-masonry'];
+function buildModulaItemHoverClassNames(settings) {
+  const galleryType = String(settings?.type || '').trim();
+  if (galleryType === 'story') {
+    return 'modula-item';
+  }
+  const captionBelow = settings?.contentPlacement === 'below-image' && !GALLERY_TYPES_WITHOUT_BELOW_IMAGE_CAPTIONS.includes(galleryType);
+  const hb = settings?.hover_builder;
+  if (hb && typeof hb === 'object') {
+    const parts = ['modula-item', 'modula-hover-v2', 'modula-hover-v2--free-slots'];
+    let card = typeof hb.cardTreatment === 'string' ? hb.cardTreatment : '';
+    const dimRaw = hb.dimOverlay;
+    let dimOn = dimRaw === true || dimRaw === 1 || dimRaw === '1';
+    if (card === 'dim') {
+      dimOn = true;
+      card = 'none';
+    }
+    if (card && card !== 'none') {
+      parts.push(`modula-hover-card--${card}`);
+    }
+    if (dimOn) {
+      parts.push('modula-hover-card--dim-addon');
+    }
+    const slots = [['title', 'titleEnter', 'titleVisibility'], ['caption', 'captionEnter', 'captionVisibility'], ['social', 'socialEnter', 'socialVisibility']];
+    for (const [slot, enterKey, visibilityKey] of slots) {
+      if (captionBelow && (slot === 'title' || slot === 'caption')) {
+        continue;
+      }
+      const vis = typeof hb[visibilityKey] === 'string' ? hb[visibilityKey] : 'on-hover';
+      if (vis === 'on-hover') {
+        parts.push(`modula-hover-visibility--${slot}--on-hover`);
+      } else if (vis === 'always' || vis === 'hide-on-hover' || vis === 'hidden') {
+        parts.push(`modula-hover-visibility--${slot}--${vis}`);
+      }
+      const ent = typeof hb[enterKey] === 'string' ? hb[enterKey] : '';
+      if (vis === 'on-hover' && ent && ent !== 'none') {
+        parts.push(`modula-hover-enter--${slot}--${ent}`);
+      }
+      if (vis === 'hide-on-hover' && ent && ent !== 'none') {
+        parts.push(`modula-hover-exit--${slot}--${ent}`);
+      }
+    }
+    return parts.join(' ');
+  }
+  const effect = typeof settings?.effect === 'string' && settings.effect !== '' ? settings.effect : 'none';
+  if (effect !== 'none') {
+    return `modula-item effect-${effect}`;
+  }
+  return 'modula-item';
+}
 ;// ./assets/src/js/components/ModulaGalleryImage.js
+
 
 
 const ModulaGalleryImage = props => {
@@ -463,10 +540,13 @@ const ModulaGalleryImage = props => {
     img,
     index
   } = props;
-  let itemClassNames = `modula-item effect-${settings.effect}`;
+  const hoverClasses = buildModulaItemHoverClassNames(settings);
+  let itemClassNames = hoverClasses;
   if (settings.type === 'slider') {
-    itemClassNames = 'modula-item f-carousel__slide';
+    const extra = hoverClasses.replace(/^modula-item\s+/, '').trim();
+    itemClassNames = `modula-item f-carousel__slide${extra ? ` ${extra}` : ''}`;
   }
+  const hasHoverBuilder = settings.hover_builder && typeof settings.hover_builder === 'object';
   const renderMedia = () => {
     if (!img.video_template || img.video_template !== '1' || !img.video_type) {
       // Return image element if video_template is not defined or is not '1'
@@ -527,9 +607,9 @@ const ModulaGalleryImage = props => {
     img: img,
     index: index,
     key: index,
-    hideTitle: effectCheck && effectCheck.title ? false : true,
-    hideDescription: effectCheck && effectCheck.description ? false : true,
-    hideSocial: effectCheck && effectCheck.social ? false : true,
+    hideTitle: hasHoverBuilder ? false : !(effectCheck && effectCheck.title),
+    hideDescription: hasHoverBuilder ? false : !(effectCheck && effectCheck.description),
+    hideSocial: hasHoverBuilder ? false : !(effectCheck && effectCheck.social),
     effectCheck: effectCheck
   })));
 };
@@ -541,98 +621,97 @@ const ModulaStyle = props => {
     id,
     settings
   } = props;
+  const useLegacyEffectStyles = !settings.hover_builder || typeof settings.hover_builder !== 'object';
   let style = ``;
   if ('grid' == settings.type) {
     if ('automatic' != settings.grid_type) {
-      style += `#jtg-${id}.modula-gallery .modula-item, .modula-gallery .modula-grid-sizer { width: calc(${100 / settings.grid_type}% - ${settings.gutter - settings.gutter / settings.grid_type}px) !important}`;
+      style += `#modula-${id}.modula-gallery .modula-item, .modula-gallery .modula-grid-sizer { width: calc(${100 / settings.grid_type}% - ${settings.gutter - settings.gutter / settings.grid_type}px) !important}`;
     }
   }
   if ('0' != settings.borderSize) {
-    style += `#jtg-${id} .modula-item {
+    style += `#modula-${id} .modula-item {
 			border: ${settings.borderSize}px solid ${settings.borderColor};
 		}`;
   }
   if ('0' != settings.borderRadius) {
-    style += `#jtg-${id} .modula-item {
+    style += `#modula-${id} .modula-item {
 			border-radius: ${settings.borderRadius}px;
 		}`;
   }
   if ('0' != settings.shadowSize) {
-    style += `#jtg-${id} .modula-item {
+    style += `#modula-${id} .modula-item {
 			box-shadow: ${settings.shadowColor} 0px 0px ${settings.shadowSize}px;
 		}`;
   }
   if ('#ffffff' != settings.socialIconColor) {
-    style += `#jtg-${id} .modula-item .jtg-social a {
+    style += `#modula-${id} .modula-item .modula-social a {
 			color: ${settings.socialIconColor};
 		}`;
   }
   if ('16' != settings.socialIconSize) {
-    style += `#jtg-${id} .modula-item .jtg-social svg {
+    style += `#modula-${id} .modula-item .modula-social svg {
 			height: ${settings.socialIconSize}px;
 			width: ${settings.socialIconSize}px;
 		}`;
   }
   if ('10' != settings.socialIconPadding) {
-    style += `#jtg-${id} .modula-item .jtg-social a:not(:last-child) {
+    style += `#modula-${id} .modula-item .modula-social a:not(:last-child) {
 			margin-right: ${settings.socialIconPadding}px;
 		}`;
   }
-  style += `#jtg-${id} .modula-item .caption {
+  style += `#modula-${id} .modula-item .caption {
 		background-color: ${settings.captionColor};
 	}`;
   if ('' != settings.captionColor) {
-    style += `#jtg-${id} .modula-item .figc {
+    style += `#modula-${id} .modula-item .figc {
 			color: ${settings.captionColor};
 		}`;
   }
   if ('' != settings.titleFontSize && '0' != settings.titleFontSize) {
-    style += `#jtg-${id} .modula-item .figc .jtg-title {
+    style += `#modula-${id} .modula-item .figc .modula-title {
 			font-size: ${settings.titleFontSize}px;
 		}`;
   }
   if ('' != settings.captionFontSize && '0' != settings.captionFontSize) {
-    style += `#jtg-${id} .modula-item .figc p.description {
+    style += `#modula-${id} .modula-item .figc p.description {
 			font-size: ${settings.captionFontSize}px;
 		}`;
   }
-  style += `#jtg-${id} .modula-items .figc p.description {
+  style += `#modula-${id} .modula-items .figc p.description {
 			color: ${settings.captionColor};
 	}`;
   if ('' != settings.titleColor) {
-    style += `#jtg-${id} .modula-items .figc .jtg-title {
+    style += `#modula-${id} .modula-items .figc .modula-title {
 			color: ${settings.titleColor};
 		}`;
   } else {
-    style += `#jtg-${id} .modula-items .figc .jtg-title {
+    style += `#modula-${id} .modula-items .figc .modula-title {
 			color: ${settings.captionColor};
 		}`;
   }
-  style += `#jtg-${id}.modula-gallery .modula-item > a, #jtg-${id}.modula-gallery .modula-item, #jtg-${id}.modula-gallery .modula-item-content > a:not(.modula-no-follow){
+  style += `#modula-${id}.modula-gallery .modula-item > a, #modula-${id}.modula-gallery .modula-item, #modula-${id}.modula-gallery .modula-item-content > a:not(.modula-no-follow){
 		cursor: ${settings.cursor};
 	}`;
 
   // SEE ABOUT LOADED EFFECT IF WE NEED TO ADD OR NOTTTTTTTTTTTTTT #REMINDER
 
   if ('custom-grid' != settings.type || 'slider' != settings.type) {
-    style += `#jtg-${id} {
+    style += `#modula-${id} {
 		width: ${settings.width};
 		margin : 0 auto;
 		}`;
     if (props.imagesCount == 0) {
-      style += `#jtg-${id} .modula-items {
+      style += `#modula-${id} .modula-items {
 				height: 100px;
 			}`;
-    } else {
-      if ('grid' != settings.type && 'slider' != settings.type && 'bnb' != settings.type) {
-        style += `#jtg-${id} .modula-items {
+    } else if ('grid' != settings.type && 'slider' != settings.type && 'bnb' != settings.type) {
+      style += `#modula-${id} .modula-items {
 				height: ${settings.height[0]}px;
 			}`;
-      } else if ('slider' == settings.type) {
-        style += `#jtg-${id} .modula-items {
+    } else if ('slider' == settings.type) {
+      style += `#modula-${id} .modula-items {
 				height: auto;
 			}`;
-      }
     }
   }
   if (undefined != settings.style && 0 != settings.style.length) {
@@ -642,95 +721,101 @@ const ModulaStyle = props => {
   //RESPONSIVE FIXES
   let mobileStyle = ``;
   if ('' != settings.mobileTitleFontSize && 0 != settings.mobileTitleFontSize) {
-    mobileStyle += `#jtg-${id} .modula-item .figc .jtg-title {
+    mobileStyle += `#modula-${id} .modula-item .figc .modula-title {
 			font-size: ${settings.mobileTitleFontSize}px
 		}`;
   }
-  mobileStyle += `#jtg-${id} .modula-items .figc p.description {
+  mobileStyle += `#modula-${id} .modula-items .figc p.description {
 		color: ${settings.captionColor};
 		font-size: ${settings.mobileCaptionFontSize}px;
 	}`;
   style += `@media screen and (max-width:480px){
 		${mobileStyle}
 		}`;
-  if ('none' == settings.effect) {
-    style += `#jtg-${id} .modula-items .modula-item:hover img {
+  if (useLegacyEffectStyles) {
+    if ('none' == settings.effect) {
+      style += `#modula-${id} .modula-items .modula-item:hover img {
 			opacity: 1;
 		}`;
-  }
-  style += `#jtg-${id}.modula .modula-items .modula-item .modula-item-overlay,   #jtg-${id}.modula .modula-items .modula-item.effect-layla,   #jtg-${id}.modula .modula-items .modula-item.effect-ruby,  #jtg-${id}.modula .modula-items .modula-item.effect-bubba,  #jtg-${id}.modula .modula-items .modula-item.effect-sarah,  #jtg-${id}.modula .modula-items .modula-item.effect-milo,  #jtg-${id}.modula .modula-items .modula-item.effect-julia,  #jtg-${id}.modula .modula-items .modula-item.effect-hera,  #jtg-${id}.modula .modula-items .modula-item.effect-winston,  #jtg-${id}.modula .modula-items .modula-item.effect-selena,  #jtg-${id}.modula .modula-items .modula-item.effect-terry,  #jtg-${id}.modula .modula-items .modula-item.effect-phoebe,  #jtg-${id}.modula .modula-items} .modula-item.effect-apollo,  #jtg-${id}.modula .modula-items .modula-item.effect-steve,  #jtg-${id}.modula .modula-items .modula-item.effect-ming{ 
+    }
+    style += `#modula-${id}.modula .modula-items .modula-item .modula-item-overlay,   #modula-${id}.modula .modula-items .modula-item.effect-layla,   #modula-${id}.modula .modula-items .modula-item.effect-ruby,  #modula-${id}.modula .modula-items .modula-item.effect-bubba,  #modula-${id}.modula .modula-items .modula-item.effect-sarah,  #modula-${id}.modula .modula-items .modula-item.effect-milo,  #modula-${id}.modula .modula-items .modula-item.effect-julia,  #modula-${id}.modula .modula-items .modula-item.effect-hera,  #modula-${id}.modula .modula-items .modula-item.effect-winston,  #modula-${id}.modula .modula-items .modula-item.effect-selena,  #modula-${id}.modula .modula-items .modula-item.effect-terry,  #modula-${id}.modula .modula-items .modula-item.effect-phoebe,  #modula-${id}.modula .modula-items} .modula-item.effect-apollo,  #modula-${id}.modula .modula-items .modula-item.effect-steve,  #modula-${id}.modula .modula-items .modula-item.effect-ming{ 
 		background-color: ${settings.hoverColor};
 	}`;
-  style += `#jtg-${id}.modula .modula-items .modula-item.effect-oscar {
+    style += `#modula-${id}.modula .modula-items .modula-item.effect-oscar {
 		background: -webkit-linear-gradient(45deg, ${settings.hoverColor} 0, #9b4a1b 40%, ${settings.hoverColor} 100%);
 		background: linear-gradient(45deg, ${settings.hoverColor} 0, #9b4a1b 40%, ${settings.hoverColor} 100%);
 	}`;
-  style += `#jtg-${id}.modula .modula-items .modula-item.effect-roxy {
+    style += `#modula-${id}.modula .modula-items .modula-item.effect-roxy {
 		background: -webkit-linear-gradient(45deg, ${settings.hoverColor} 0, #05abe0 100%);
 		background: linear-gradient(45deg, ${settings.hoverColor} 0, #05abe0 100%);
 	}`;
-  style += `#jtg-${id}.modula .modula-items .modula-item.effect-dexter {
+    style += `#modula-${id}.modula .modula-items .modula-item.effect-dexter {
 		background: -webkit-linear-gradient(top, ${settings.hoverColor} 0, rgba(104,60,19,1) 100%);
 		background: linear-gradient(top, ${settings.hoverColor} 0, rgba(104,60,19,1) 100%);
 	}`;
-  style += `#jtg-${id}.modula .modula-items .modula-item.effect-jazz {
+    style += `#modula-${id}.modula .modula-items .modula-item.effect-jazz {
 		background: -webkit-linear-gradient(-45deg, ${settings.hoverColor} 0, #f33f58 100%);
 		background: linear-gradient(-45deg, ${settings.hoverColor} 0, #f33f58 100%);
 	}`;
-  style += `#jtg-${id}.modula .modula-items .modula-item.effect-lexi {
+    style += `#modula-${id}.modula .modula-items .modula-item.effect-lexi {
 		background: -webkit-linear-gradient(-45deg, ${settings.hoverColor} 0, #fff 100%);
 		background: linear-gradient(-45deg, ${settings.hoverColor} 0, #fff 100%);
 	}`;
-  style += `#jtg-${id}.modula .modula-items .modula-item.effect-duke {
+    style += `#modula-${id}.modula .modula-items .modula-item.effect-duke {
 		background: -webkit-linear-gradient(-45deg, ${settings.hoverColor} 0, #cc6055 100%);
 		background: linear-gradient(-45deg, ${settings.hoverColor} 0, #cc6055 100%);
 	}`;
-  if (settings.hoverOpacity <= 100 && 'none' != settings.effect) {
-    style += `#jtg-${id}.modula .modula-items .modula-item:hover img {
+    if (settings.hoverOpacity <= 100 && 'none' != settings.effect) {
+      style += `#modula-${id}.modula .modula-items .modula-item:hover img {
 			opacity: ${1 - settings.hoverOpacity / 100} ;
+		}`;
+    }
+    style += `#modula-${id}.modula-gallery .modula-item.effect-terry .modula-social a:not(:last-child) {
+		margin-bottom: ${settings.socialIconPadding}px;
+	}`;
+  } else {
+    style += `#modula-${id} .modula-item.modula-hover-v2 .modula-item-overlay {
+			background-color: ${settings.hoverColor};
 		}`;
   }
   if ('default' != settings.titleFontWeight) {
-    style += `#jtg-${id}.modula .modula-items .modula-item .jtg-title {
+    style += `#modula-${id}.modula .modula-items .modula-item .modula-title {
 			font-weight : ${settings.titleFontWeight};
 		}`;
   }
   if ('default' != settings.captionFontWeight) {
-    style += `#jtg-${id}.modula .modula-items .modula-item p.description {
+    style += `#modula-${id}.modula .modula-items .modula-item p.description {
 			font-weight : ${settings.captionFontWeight};
 		}`;
   }
-  style += `#jtg-${id}.modula-gallery .modula-item.effect-terry .jtg-social a:not(:last-child) {
-		margin-bottom: ${settings.socialIconPadding}px;
-	}`;
-  if ('slider' == settings['type']) {
+  if ('slider' == settings.type) {
     if ('true' == jQuery('[aria-label=Settings]').attr('aria-expanded')) {
-      style += `#jtg-${id} {
+      style += `#modula-${id} {
 					width: 800px;
 					}`;
     } else {
-      style += `#jtg-${id} {
+      style += `#modula-${id} {
 			width: 1100px;
 			}`;
     }
-    style += `#jtg-${id} .modula-items {
+    style += `#modula-${id} .modula-items {
 		height: auto;
 		}`;
-    style += `#jtg-${id} .modula-item {
+    style += `#modula-${id} .modula-item {
 		background-color: transparent;
 		transform: none;
 		}`;
   }
-  if (undefined != settings['filters'] && settings['filters'].length > 1) {
-    style += `#jtg-${id}.modula-gallery .filters {
-			text-align: ${settings['filterTextAlignment']};
+  if (undefined != settings.filters && settings.filters.length > 1) {
+    style += `#modula-${id}.modula-gallery .filters {
+			text-align: ${settings.filterTextAlignment};
 		}`;
   }
-  if ('bnb' == settings['type']) {
-    style += `#jtg-${id}.modula.modula-gallery-bnb .modula_bnb_main_wrapper{flex-basis: calc( 50% - ` + settings.gutter / 2 + `px );}`;
-    style += `#jtg-${id}.modula.modula-gallery-bnb .modula_bnb_items_wrapper{flex-basis: calc( 50% - ` + settings.gutter / 2 + `px );gap: ` + settings.gutter + `px;}`;
+  if ('bnb' == settings.type) {
+    style += `#modula-${id}.modula.modula-gallery-bnb .modula_bnb_main_wrapper{flex-basis: calc( 50% - ` + settings.gutter / 2 + `px );}`;
+    style += `#modula-${id}.modula.modula-gallery-bnb .modula_bnb_items_wrapper{flex-basis: calc( 50% - ` + settings.gutter / 2 + `px );gap: ` + settings.gutter + `px;}`;
   }
-  style += `#jtg-${id}.modula.modula-gallery.modula-gallery-initialized .modula-item-content{opacity:1;}`;
+  style += `#modula-${id}.modula.modula-gallery.modula-gallery-initialized .modula-item-content{opacity:1;}`;
   return /*#__PURE__*/React.createElement("style", {
     dangerouslySetInnerHTML: {
       __html: `
@@ -751,7 +836,7 @@ const ModulaItemsExtraComponent = props => {
 const {
   Fragment: ModulaGallery_Fragment,
   useEffect: ModulaGallery_useEffect,
-  useRef
+  useRef: ModulaGallery_useRef
 } = wp.element;
 
 
@@ -769,13 +854,13 @@ const ModulaGallery = props => {
     modulaCarouselRun,
     galleryElRef
   } = props;
-  const galleryRef = useRef(null);
+  const galleryRef = ModulaGallery_useRef(null);
   ModulaGallery_useEffect(() => {
     if (galleryRef.current) {
       galleryRef.current = true;
       return;
     }
-    if (settings !== undefined) {
+    if (settings !== undefined && (!settings.hover_builder || typeof settings.hover_builder !== 'object')) {
       checkHoverEffect(settings.effect);
     }
     if ('slider' !== settings.type) {
@@ -788,6 +873,8 @@ const ModulaGallery = props => {
   let itemsClassNames = 'modula-items';
   if (settings.type == 'creative-gallery') {
     galleryClassNames += 'modula-creative-gallery';
+  } else if (settings.type == 'polaroid') {
+    galleryClassNames += 'modula-polaroid-gallery';
   } else if (settings.type == 'custom-grid') {
     galleryClassNames += 'modula-custom-grid';
   } else if (settings.type == 'slider') {
@@ -805,7 +892,7 @@ const ModulaGallery = props => {
     id: id,
     settings: settings
   }), /*#__PURE__*/React.createElement("div", {
-    id: `jtg-${id}`,
+    id: `modula-${id}`,
     ref: galleryElRef,
     className: `${galleryClassNames} ${props.attributes.modulaDivClassName != undefined ? props.attributes.modulaDivClassName : ''}`,
     "data-config": JSON.stringify(jsConfig)
@@ -1903,12 +1990,27 @@ function withFilters(hookName) {
 
 //# sourceMappingURL=index.js.map
 
+;// ./assets/src/js/utils/modulaGalleryPickerQuery.js
+/**
+ * REST query used by the Gutenberg gallery picker preload.
+ *
+ * WordPress REST `per_page` max is 100; -1 is rejected.
+ *
+ * @return {{ post_status: string, per_page: number }} Query for getEntityRecords.
+ */
+function getModulaGalleryPickerQuery() {
+  return {
+    post_status: 'publish',
+    per_page: 100
+  };
+}
 ;// ./assets/src/js/components/edit.js
 
 
 /**
  * Internal dependencies
  */
+
 
 
 
@@ -1936,7 +2038,8 @@ const {
   ToolbarItem
 } = wp.components;
 const {
-  BlockControls
+  BlockControls,
+  useBlockProps
 } = wp.blockEditor;
 const {
   compose
@@ -1961,6 +2064,7 @@ const ModulaEdit = props => {
   const [idCheck, setIdCheck] = useState(id);
   const modulaInstanceRef = edit_useRef(null);
   const galleryElRef = edit_useRef(null);
+  const blockProps = useBlockProps();
   edit_useEffect(() => {
     if (id !== 0) {
       onIdChange(id);
@@ -2112,7 +2216,7 @@ const ModulaEdit = props => {
     target: "_blank"
   }))));
   if (id == 0 && 'none' === attributes.galleryType) {
-    return /*#__PURE__*/React.createElement(edit_Fragment, null, /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", blockProps, /*#__PURE__*/React.createElement("div", {
       className: "modula-block-preview"
     }, /*#__PURE__*/React.createElement("div", {
       className: "modula-block-preview__content"
@@ -2138,13 +2242,13 @@ const ModulaEdit = props => {
     }, edit_('Upgrade to PRO to create galleries using a preset ( fastest way )', 'modula-best-grid-gallery'))))));
   }
   if (status === 'loading') {
-    return /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", blockProps, /*#__PURE__*/React.createElement("div", {
       className: "modula-block-preview"
     }, /*#__PURE__*/React.createElement("div", {
       className: "modula-block-preview__content"
     }, /*#__PURE__*/React.createElement("div", {
       className: "modula-block-preview__logo"
-    }), /*#__PURE__*/React.createElement(Spinner, null)));
+    }), /*#__PURE__*/React.createElement(Spinner, null))));
   }
   if (id == 0 || images.length === 0) {
     return /*#__PURE__*/React.createElement(edit_Fragment, {
@@ -2152,7 +2256,7 @@ const ModulaEdit = props => {
     }, /*#__PURE__*/React.createElement(inspector, _extends({
       onIdChange: id => onIdChange(id),
       selectOptions: selectOptions
-    }, props)), /*#__PURE__*/React.createElement("div", {
+    }, props)), /*#__PURE__*/React.createElement("div", blockProps, /*#__PURE__*/React.createElement("div", {
       className: "modula-block-preview"
     }, /*#__PURE__*/React.createElement("div", {
       className: "modula-block-preview__content"
@@ -2169,7 +2273,7 @@ const ModulaEdit = props => {
       target: "_blank",
       href: modulaVars.adminURL + 'post.php?post=' + id + '&action=edit',
       isPrimary: true
-    }, edit_('Edit Gallery'))))));
+    }, edit_('Edit Gallery')))))));
   }
   if (settings) {
     return /*#__PURE__*/React.createElement(edit_Fragment, {
@@ -2178,7 +2282,7 @@ const ModulaEdit = props => {
       onIdChange: id => {
         onIdChange(id);
       }
-    }, props)), /*#__PURE__*/React.createElement(components_ModulaGallery, _extends({}, props, {
+    }, props)), /*#__PURE__*/React.createElement("div", blockProps, /*#__PURE__*/React.createElement(components_ModulaGallery, _extends({}, props, {
       settings: settings,
       jsConfig: jsConfig,
       modulaRun: modulaRun,
@@ -2186,7 +2290,7 @@ const ModulaEdit = props => {
       checkHoverEffect: checkHoverEffect,
       galleryId: galleryId,
       galleryElRef: galleryElRef
-    })));
+    }))));
   }
   return null;
 };
@@ -2194,10 +2298,7 @@ const applyWithSelect = withSelect((select, props) => {
   const {
     getEntityRecords
   } = select('core');
-  const query = {
-    post_status: 'publish',
-    per_page: 5
-  };
+  const query = getModulaGalleryPickerQuery();
   return {
     galleries: getEntityRecords('postType', 'modula-gallery', query) || []
   };

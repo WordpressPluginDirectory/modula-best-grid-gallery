@@ -4,7 +4,7 @@ Tags: gallery plugin, image gallery, video gallery, responsive gallery, WordPres
 Requires at least: 5.3
 Tested up to: 7.1
 Requires PHP: 5.6
-Stable tag: 2.14.36
+Stable tag: 3.0.6
 
 License: GNU General Public License v3.0 or later  
 
@@ -325,6 +325,88 @@ The simplest way to install is to click on 'Plugins' then 'Add' and type 'Modula
 4. Mobile Responsive Image Galleries - Galleries automatically adapt to smartphone and tablet screen sizes
 
 == Changelog ==
+
+= 3.0.6 - 18.09.2026 =
+Fixed: Gallery filter name list is no longer wiped to empty/placeholder on classic or Beta save while image tags remain; already-wiped galleries refill the list from per-image tags.
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.5 - 18.09.2026 =
+Fixed: Frontend Edit gallery link no longer triggers an undefined array key warning on classic (`jtg-`) galleries.
+Fixed: Gallery listing shows gallery type product names from the settings schema (Masonry for type `grid`, not Grid).
+Fixed: Release zip again includes classic admin `modula-gallery-upload.min.js` and `wp-modula-gallery.min.js` (uglify no longer skips them).
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.4 - 18.09.2026 =
+Added: Duplicate on gallery listing row hover actions (same as ⋮; short label).
+Changed: Classic visitor shortcode gallery root is `id="jtg-{id}"` again; `#modula-{id}` is only the Beta / modern renderer root.
+Compat: Classic Custom CSS and theme root selectors stay `#jtg-{id}`. Beta / modern galleries use `#modula-{id}`.
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.3 - 16.09.2026 =
+Added: Listing toolbar Trash icon that switches SHOW to In the trash (and toggles back to Published).
+Added: Classic WYSIWYG Caption editor on the gallery item edit panel (same TinyMCE toolbar as bulk-edit captions).
+Changed: Gallery listing default SHOW is Published; removed the Everything (all live) status option.
+Changed: Removed Image click behavior “Direct link to image file”; existing galleries stored as `direct` are treated as Fancybox.
+Changed: Gallery editor top bar and shortcode panels refined (document status and embed chrome).
+Fixed: Listing ⋮ action labels (e.g. Restore classic editor, Apply preset) wrap instead of forcing a horizontal scrollbar.
+Fixed: Draft and private galleries no longer show “Gallery not found.” to visitors who cannot read them — they see “This gallery is not published.”
+Fixed: Per-image Redirect to URL skips the lightbox and navigates on tile click, even when the gallery Image click behavior is Open in lightbox.
+Fixed: Gutenberg Modula Gallery block chooser is no longer capped at five galleries; search matches by title as well as ID.
+Fixed: New Beta galleries paint phones-and-tablets / Masonry column controls from schema defaults on first open (empty grouped settings no longer hide them).
+Fixed: Omitted Masonry grid type on new Beta galleries defaults to 3 columns, not justified automatic.
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.2 - 11.09.2026 =
+Added: Convert to new editor on the gallery listing bulk bar for selected classic galleries (same classic settings backup as row Convert).
+Added: Restore classic editor on the gallery listing (⋮) for Beta galleries that have a Convert backup — restores flat classic settings and clears the Beta flag (shortcode unchanged).
+Fixed: New gallery editor choice no longer stays stuck when a View Transition aborts; each choice and dismiss finishes (Beta gallery, classic gallery editor, or back to the listing).
+Fixed: Modern/Beta visitor galleries no longer stay forever on “Loading gallery…” — renderer assets enqueue reliably (with cache-busting), stalled mounts recover or fail visibly with retry, and missing assets show an alert instead of an invisible shell.
+Added: Modula Debug Log in Settings → Diagnostics — opt-in JSONL failure log (enable, status, Download, Clear) for support, without requiring WP_DEBUG.
+Added: Debug Log instrumentation for settings REST, gallery persist, and shortcode bootstrap failures (plus album.persist channel for Compatible Pro).
+Added: WP-CLI gallery helpers to list, convert, and restore galleries from the command line.
+Added: Compact Beta gallery editor chrome — fixed 72px icon-only sidebar rail with accessible names/tooltips and short rail labels.
+Added: Gallery document status (publish / draft / private) in the takeover topbar, ahead of save status.
+Added: Image click behavior “Lightbox, or link when set” — tile opens the lightbox when an image has no custom URL, or goes to that URL when one is set (pre-3.0 Pro hybrid; no automatic migration).
+Changed: Gallery settings panel narrowed to 300px; supplementary field help moved into accessible info tips for a denser, cleaner canvas.
+Changed: Hub drill-row secondary value summaries hidden so nested settings navigation stays scannable.
+Changed: Takeover topbar layout cleaned up (shared select sizing, style-guide spacing/typography).
+Changed: Renamed Image click behavior “External URL” to “Go to URL” (same `external-url` mode).
+Fixed: Security issue — social share meta and visitor shortcode no longer expose non-visitor-readable galleries (private/draft) to unauthorized requests.
+Fixed: Classic Update Gallery no longer wipes stored images when the modula-images payload is blank, invalid, or an empty array.
+Fixed: Classic gallery items now sync into the hidden field on Update Gallery (including after bootstrap and before submit).
+Fixed: Classic Save no longer empties the gallery when image captions contain quote characters (e.g. 30" × 40") — JSON is decoded after a single unslash, without a second stripslashes.
+Fixed: Clearing Alt / Title / Caption completely in the Beta item panel now persists after autosave (Media Library non-empty text is still not wiped by empty sync).
+Fixed: Lazy load gallery setting honored on modern visitor bootstrap (turning Lazy load off actually reaches the frontend).
+Fixed: Gallery `sizes` attribute matches column breakpoints so eager thumbnails no longer default to undersized srcset candidates.
+Fixed: Admin gallery listing and Beta editor status bar no longer show “0 images” when the gallery catalog has items (classic and/or v2).
+Fixed: Gallery editor Captions & Titles Size number input no longer snaps to the minimum on each keystroke, so multi-digit sizes (e.g. 16) can be typed; the value clamps after a short pause or when leaving the field.
+Fixed: Gallery listing checkboxes keep accumulating selection across galleries and albums (mixed-type bulk); a second row check no longer replaces the first.
+Fixed: New album no longer opens a blank Add New Album screen when Albums editor takeover is off; the classic album editor is shown.
+Compat: Beta gallery pagination dual-classes legacy hooks (.modula-navigation, .page-numbers, .current) alongside .modula-pagination* so shallow custom CSS keeps working; deep selectors (a.page-numbers, list wrappers, sibling #gallery + .modula-navigation) still need updating to the Beta markup.
+Compat: Item chrome dual-classes Justified Grid Gallery hooks (.jtg-title, .jtg-description, .jtg-social) alongside .modula-title / .modula-description / .modula-social so theme and Defaults CSS keep matching; nested .jtg-body wrappers and #jtg-* root ids are unchanged (see ADR 0029).
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.1 - 10.09.2026 =
+Fixed: Standalone settings save can deep-merge options before store (album/gallery toggles).
+
+= 3.0.0 - 09.09.2026 =
+Added: New beta gallery editor.
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 2.14.39 - 08.09.2026 =
+Fixed: Gutenberg gallery block could display as raw, unrendered shortcode text on the frontend with some themes.
+Fixed: Some themes injected stray <p> tags into the gallery markup, breaking the layout.
+Fixed: Large gallery imports could time out on bigger sites.
+Added: Search box and "already imported" status in the gallery import list.
+Fixed: Missing keyboard focus outline on non-lightbox gallery links.
+
+= 2.14.38 - 28.08.2026 =
+Fixed: Gallery migration issue.
+Fixed: Permalinks not refreshing after changing gallery/album URL settings.
+
+= 2.14.37 - 21.08.2026 =
+Fixed: Minor block editor compatibility improvements.
+
 = 2.14.36 - 13.08.2026 =
 Fixed: Compatibility with WordPress 7.1
 

@@ -131,6 +131,34 @@ class Modula_Rest_Api {
 				'permission_callback' => array( $this, 'settings_permissions_check' ),
 			)
 		);
+
+		register_rest_route(
+			$this->namespace,
+			'/debug-log',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'debug_log_action' ),
+				'permission_callback' => array( 'Modula_Debug_Log_Rest', 'permissions_check' ),
+				'args'                => array(
+					'action' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'enum'              => array( 'enable', 'disable', 'clear' ),
+						'sanitize_callback' => 'sanitize_key',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			$this->namespace,
+			'/debug-log/download',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( $this, 'debug_log_download' ),
+				'permission_callback' => array( 'Modula_Debug_Log_Rest', 'permissions_check' ),
+			)
+		);
 	}
 
 	public function get_settings() {
@@ -141,6 +169,15 @@ class Modula_Rest_Api {
 		$settings = $request->get_json_params();
 
 		if ( empty( $settings ) || ! is_array( $settings ) ) {
+			Modula_Debug_Log::log_failure(
+				Modula_Debug_Log::CHANNEL_SETTINGS_REST,
+				'general-settings save rejected: empty body',
+				array(
+					'route'      => '/modula-best-grid-gallery/v1/general-settings',
+					'error_code' => 'empty_body',
+					'status'     => 400,
+				)
+			);
 			return new \WP_REST_Response( 'No settings to save.', 400 );
 		}
 
@@ -155,6 +192,14 @@ class Modula_Rest_Api {
 			}
 
 			$value = $this->sanitize_setting_value( $value, $sanitization_schema[ $option ], $sanitizer );
+
+			/**
+			 * Filter a general-settings option value after schema sanitize, before it is stored.
+			 *
+			 * @param mixed  $value  Sanitized option value.
+			 * @param string $option Option name.
+			 */
+			$value = apply_filters( 'modula_settings_api_pre_update_' . $option, $value, $option );
 
 			update_option( $option, $value );
 
@@ -212,6 +257,32 @@ class Modula_Rest_Api {
 
 		// Check if the user has the capability to manage options
 		return current_user_can( 'manage_options' );
+	}
+
+	/**
+	 * Diagnostics: enable / disable / clear Modula Debug Log.
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function debug_log_action( $request ) {
+		$action = $request->get_param( 'action' );
+		if ( empty( $action ) ) {
+			$data   = $request->get_json_params();
+			$action = is_array( $data ) && isset( $data['action'] ) ? $data['action'] : '';
+		}
+		return Modula_Debug_Log_Rest::handle_action( $action );
+	}
+
+	/**
+	 * Diagnostics: download Modula Debug Log payload.
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function debug_log_download( $request ) {
+		unset( $request );
+		return Modula_Debug_Log_Rest::handle_download();
 	}
 
 	public function license_action( $request ) {
@@ -384,10 +455,10 @@ class Modula_Rest_Api {
 			);
 		}
 
-		// Defaults (for galleries) - requires defaults extension
+		// Presets (for galleries) - requires defaults extension
 		if ( $defaults_active ) {
 			$menu_items[] = array(
-				'title' => 'Defaults',
+				'title' => 'Presets',
 				'url'   => admin_url( 'edit.php?post_type=modula-defaults' ),
 				'class' => '',
 			);
@@ -401,10 +472,10 @@ class Modula_Rest_Api {
 				'class' => '',
 			);
 
-			// Defaults (for albums) - requires albums AND defaults extensions
+			// Presets (for albums) - requires albums AND defaults extensions
 			if ( $defaults_active ) {
 				$menu_items[] = array(
-					'title' => 'Defaults',
+					'title' => 'Presets',
 					'url'   => admin_url( 'edit.php?post_type=defaults-albums' ),
 					'class' => '',
 				);

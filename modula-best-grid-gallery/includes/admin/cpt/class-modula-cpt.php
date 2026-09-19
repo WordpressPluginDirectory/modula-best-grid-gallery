@@ -2,6 +2,10 @@
 
 use Modula\Ai\Optimizer\Optimizer;
 
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
 /**
  * The cpt plugin class.
  *
@@ -10,6 +14,7 @@ use Modula\Ai\Optimizer\Optimizer;
  * @since      2.0.0
  */
 class Modula_CPT {
+
 
 	private $labels              = array();
 	private $args                = array();
@@ -61,6 +66,23 @@ class Modula_CPT {
 		add_filter( 'pre_get_posts', array( $this, 'search_by_gallery_id' ) );
 		add_action( 'views_edit-modula-gallery', array( $this, 'filter_by_gallery_type' ) );
 		add_action( 'restrict_manage_posts', array( $this, 'add_gallery_type_hidden_field' ) );
+
+		// Reuse Masonry admin icon for Parallax (no separate PNG).
+		add_filter( 'modula_radio_icon_url', array( $this, 'parallax_masonry_type_icon_url' ), 10, 2 );
+	}
+
+	/**
+	 * Use grid/Masonry settings thumbnail for Parallax gallery type in admin.
+	 *
+	 * @param string $url Icon URL.
+	 * @param string $key Gallery type key.
+	 * @return string
+	 */
+	public function parallax_masonry_type_icon_url( $url, $key ) {
+		if ( 'parallax-masonry' === $key ) {
+			return esc_url( MODULA_URL . 'assets/images/settings/grid.png' );
+		}
+		return $url;
 	}
 
 	public function register_cpt() {
@@ -330,7 +352,7 @@ class Modula_CPT {
 		// 1) Collect and validate all relevant attachment IDs
 		$attachment_ids = array();
 		$valid_images   = array();
-		
+
 		foreach ( $images_chunk as $image ) {
 			if ( ! isset( $image['id'] ) || empty( $image['id'] ) ) {
 				continue;
@@ -426,12 +448,22 @@ class Modula_CPT {
 			}
 			$existing_post = $existing_posts[ $attachment_id ];
 
-			// Potential new fields
+			// Potential new fields (empty must not wipe non-empty Media Library values).
 			$new_title       = isset( $image['title'] ) ? wp_kses_post( stripslashes( $image['title'] ) ) : null;
 			$new_description = isset( $image['description'] ) ? wp_kses_post( stripslashes( $image['description'] ) ) : null;
 			$new_alt         = isset( $image['alt'] ) ? sanitize_text_field( wp_unslash( $image['alt'] ) ) : null;
 			if ( null !== $new_alt && is_serialized( $new_alt ) ) {
 				$new_alt = '';
+			}
+			if ( null !== $new_title ) {
+				$new_title = modula_resolve_attachment_text_write( $new_title, (string) $existing_post->post_title );
+			}
+			if ( null !== $new_description ) {
+				$new_description = modula_resolve_attachment_text_write( $new_description, (string) $existing_post->post_excerpt );
+			}
+			if ( null !== $new_alt ) {
+				$existing_alt_for_guard = isset( $existing_alts[ $attachment_id ] ) ? $existing_alts[ $attachment_id ] : '';
+				$new_alt                = modula_resolve_attachment_text_write( $new_alt, (string) $existing_alt_for_guard );
 			}
 
 			// Compare posts fields
@@ -600,30 +632,48 @@ class Modula_CPT {
 		}
 
 		if ( isset( $_POST['modula-images'] ) ) {
-			$modula_images = $this->sanitize_images( $_POST['modula-images'] );
+			/*
+			 * Classic editor: blank / invalid / accidental-empty payloads must not
+			 * wipe a non-empty gallery. Beta / REST persists images separately.
+			 */
+			$raw_images = wp_unslash( $_POST['modula-images'] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+			$existing   = get_post_meta( $post_id, 'modula-images', true );
+			$decoded    = modula_resolve_classic_images_save( $raw_images, $existing );
+			// null = skip images meta write (settings above may still have been saved).
+			if ( null !== $decoded ) {
+				$modula_images = $this->sanitize_images( $decoded );
 
-			// Use the batch update method instead of individual updates
-			$this->batch_update_images( $modula_images, $post_id );
+				// Use the batch update method instead of individual updates
+				$this->batch_update_images( $modula_images, $post_id );
 
-			foreach ( $modula_images as &$image ) {
-				if ( isset( $image['alt'] ) ) {
-					unset( $image['alt'] );
+				foreach ( $modula_images as &$image ) {
+					if ( isset( $image['alt'] ) ) {
+						unset( $image['alt'] );
+					}
+					if ( isset( $image['title'] ) ) {
+						unset( $image['title'] );
+					}
+					if ( isset( $image['description'] ) ) {
+						unset( $image['description'] );
+					}
 				}
-				if ( isset( $image['title'] ) ) {
-					unset( $image['title'] );
-				}
-				if ( isset( $image['description'] ) ) {
-					unset( $image['description'] );
-				}
+
+				update_post_meta( $post_id, 'modula-images', $modula_images );
 			}
-
-			update_post_meta( $post_id, 'modula-images', $modula_images );
 		}
 	}
 
 
 	private function sanitize_settings( $post_id, $settings ) {
 		$fields_with_tabs = Modula_CPT_Fields_Helper::get_fields( 'all' );
+		$allowed_types    = array();
+		if ( isset( $fields_with_tabs['general']['type']['values'] ) && is_array( $fields_with_tabs['general']['type']['values'] ) ) {
+			$allowed_types = array_merge( $allowed_types, array_keys( $fields_with_tabs['general']['type']['values'] ) );
+		}
+		if ( isset( $fields_with_tabs['general']['type']['disabled']['values'] ) && is_array( $fields_with_tabs['general']['type']['disabled']['values'] ) ) {
+			$allowed_types = array_merge( $allowed_types, array_keys( $fields_with_tabs['general']['type']['disabled']['values'] ) );
+		}
+		$default_type = isset( $fields_with_tabs['general']['type']['default'] ) ? $fields_with_tabs['general']['type']['default'] : 'grid';
 		// Here we will save all our settings
 		$modula_settings = array();
 
@@ -639,11 +689,13 @@ class Modula_CPT {
 					}
 
 					// Values for selects
-					$lightbox_values = apply_filters( 'modula_lightbox_values', array( 'no-link', 'direct', 'fancybox', 'external-url' ) );
-					$effect_values   = apply_filters( 'modula_effect_values', array( 'none', 'pufrobo' ) );
-					$cursor_value    = apply_filters( 'modula_cursor_values', array( 'pointer', 'zoom-in' ) );
+					$lightbox_values = apply_filters( 'modula_lightbox_values', array( 'no-link', 'fancybox', 'lightbox-prefer-url', 'external-url' ) );
 
 					switch ( $field_id ) {
+						case 'type':
+							$val                          = sanitize_text_field( wp_unslash( $settings[ $field_id ] ) );
+							$modula_settings[ $field_id ] = in_array( $val, $allowed_types, true ) ? $val : $default_type;
+							break;
 						case 'description':
 							$modula_settings[ $field_id ] = wp_filter_post_kses( $settings[ $field_id ] );
 							break;
@@ -660,8 +712,14 @@ class Modula_CPT {
 							$modula_settings[ $field_id ] = absint( $settings[ $field_id ] );
 							break;
 						case 'lightbox':
-							if ( in_array( $settings[ $field_id ], $lightbox_values ) ) {
-								$modula_settings[ $field_id ] = sanitize_text_field( wp_unslash( $settings[ $field_id ] ) );
+							$lightbox_val = sanitize_text_field( wp_unslash( $settings[ $field_id ] ) );
+							if ( function_exists( 'modula_coerce_lightbox_click_mode' ) ) {
+								$lightbox_val = modula_coerce_lightbox_click_mode( $lightbox_val );
+							} elseif ( 'direct' === $lightbox_val ) {
+								$lightbox_val = 'fancybox';
+							}
+							if ( in_array( $lightbox_val, $lightbox_values, true ) ) {
+								$modula_settings[ $field_id ] = $lightbox_val;
 							} else {
 								$modula_settings[ $field_id ] = 'fancybox';
 							}
@@ -693,13 +751,6 @@ class Modula_CPT {
 						case 'borderColor':
 						case 'shadowColor':
 							$modula_settings[ $field_id ] = Modula_Helper::sanitize_rgba_colour( wp_unslash( $settings[ $field_id ] ) );
-							break;
-						case 'effect':
-							if ( in_array( $settings[ $field_id ], $effect_values ) ) {
-								$modula_settings[ $field_id ] = $settings[ $field_id ];
-							} else {
-								$modula_settings[ $field_id ] = 'pufrobo';
-							}
 							break;
 						case 'gutterInput':
 							$modula_settings[ $field_id ] = absint( $settings[ $field_id ] );
@@ -746,11 +797,13 @@ class Modula_CPT {
 				} elseif ( 'toggle' === $field['type'] ) {
 					$modula_settings[ $field_id ] = '0';
 				} elseif ( 'hidden' === $field['type'] ) {
-					$hidden_set = get_post_meta( $post_id, 'modula-settings', true );
-					if ( isset( $hidden_set['last_visited_tab'] ) && '' !== $hidden_set['last_visited_tab'] ) {
-						$modula_settings[ $field_id ] = $hidden_set['last_visited_tab'];
+					if ( isset( $settings[ $field_id ] ) && '' !== $settings[ $field_id ] ) {
+						$modula_settings[ $field_id ] = sanitize_text_field( wp_unslash( $settings[ $field_id ] ) );
 					} else {
-						$modula_settings[ $field_id ] = 'modula-general';
+						$prev                         = get_post_meta( $post_id, 'modula-settings', true );
+						$modula_settings[ $field_id ] = is_array( $prev ) && isset( $prev[ $field_id ] )
+							? sanitize_text_field( $prev[ $field_id ] )
+							: '';
 					}
 				} else {
 					$modula_settings[ $field_id ] = '';
@@ -759,7 +812,8 @@ class Modula_CPT {
 		}
 
 		// Save the value of upload_position.
-		if ( isset( $_POST['modula-settings']['upload_position'] )
+		if (
+			isset( $_POST['modula-settings']['upload_position'] )
 			|| isset( $settings['upload_position'] )
 		) {
 			$upload_position = isset( $_POST['modula-settings']['upload_position'] )
@@ -767,19 +821,88 @@ class Modula_CPT {
 				: $settings['upload_position'];
 
 			$upload_position = '1' === $upload_position || 'start' === $upload_position
-					? 'start'
-					: 'end';
+				? 'start'
+				: 'end';
 
 			$modula_settings['upload_position'] = $upload_position;
 		} else {
 			$modula_settings['upload_position'] = 'end';
 		}
 
+		$modula_settings = $this->ensure_hover_builder_in_flat_settings( $post_id, $modula_settings );
+		$modula_settings = $this->ensure_gallery_filter_list_on_classic_save( $post_id, $settings, $modula_settings );
+
+		return $modula_settings;
+	}
+
+	/**
+	 * Do not wipe a non-empty gallery filter name list with missing/placeholder POST data.
+	 *
+	 * @param int                  $post_id          Gallery post ID.
+	 * @param array<string, mixed> $settings         Raw `modula-settings` POST (pre-sanitize).
+	 * @param array<string, mixed> $modula_settings Sanitized flat settings.
+	 * @return array<string, mixed>
+	 */
+	private function ensure_gallery_filter_list_on_classic_save( $post_id, $settings, array $modula_settings ) {
+		if ( ! function_exists( 'modula_resolve_gallery_filter_list_save' ) ) {
+			return $modula_settings;
+		}
+
+		$prev = get_post_meta( $post_id, 'modula-settings', true );
+		$prev = is_array( $prev ) ? $prev : array();
+
+		if ( ! array_key_exists( 'filters', $modula_settings )
+			&& ! ( is_array( $settings ) && array_key_exists( 'filters', $settings ) )
+			&& ! array_key_exists( 'filters', $prev ) ) {
+			return $modula_settings;
+		}
+
+		$existing    = array_key_exists( 'filters', $prev ) ? $prev['filters'] : array( '' );
+		$key_present = is_array( $settings ) && array_key_exists( 'filters', $settings );
+		$incoming    = $key_present && array_key_exists( 'filters', $modula_settings )
+			? $modula_settings['filters']
+			: null;
+
+		$modula_settings['filters'] = modula_resolve_gallery_filter_list_save( $incoming, $existing, $key_present );
+
+		return $modula_settings;
+	}
+
+	/**
+	 * Preserve an existing hover_builder on save. Do not inject Beta defaults on classic galleries.
+	 *
+	 * @param int                  $post_id          Gallery post ID.
+	 * @param array<string, mixed> $modula_settings Sanitized flat settings.
+	 * @return array<string, mixed>
+	 */
+	private function ensure_hover_builder_in_flat_settings( $post_id, array $modula_settings ) {
+		if ( isset( $modula_settings['hover_builder'] ) && is_array( $modula_settings['hover_builder'] ) ) {
+			return $modula_settings;
+		}
+		$prev = get_post_meta( $post_id, 'modula-settings', true );
+		if ( is_array( $prev ) && isset( $prev['hover_builder'] ) && is_array( $prev['hover_builder'] ) ) {
+			$modula_settings['hover_builder'] = $prev['hover_builder'];
+			return $modula_settings;
+		}
+		if ( ! \Modula\V2\Beta_Settings::is_beta_gallery( $post_id ) ) {
+			return $modula_settings;
+		}
+		$modula_settings['hover_builder'] = \Modula\V2\Settings\Adapter::default_hover_builder();
 		return $modula_settings;
 	}
 	private function sanitize_images( $images ) {
-		$sane_images = is_string( $images ) ? json_decode( stripslashes( $images ), true ) : $images;
-		$new_images  = array();
+		/*
+		 * Strings are expected already wp_unslash()'d. Do not stripslashes()
+		 * again — that breaks JSON when captions contain quote characters and
+		 * used to persist an empty gallery items list on classic Save.
+		 */
+		if ( is_string( $images ) ) {
+			$decoded     = modula_decode_classic_images_json( $images );
+			$sane_images = is_array( $decoded ) ? $decoded : array();
+		} else {
+			$sane_images = $images;
+		}
+		$new_images = array();
 
 		if ( ! is_array( $sane_images ) ) {
 			return array();
@@ -809,8 +932,18 @@ class Modula_CPT {
 				'target',
 				'width',
 				'height',
+				'gridX',
+				'gridY',
+				'gridLocked',
 				'togglelightbox',
 				'hide_title',
+				'focal_x',
+				'focal_y',
+				'focal_crop_x',
+				'focal_crop_y',
+				'focal_crop_w',
+				'focal_crop_h',
+				'tile_image_fit',
 			)
 		);
 
@@ -823,6 +956,18 @@ class Modula_CPT {
 					case 'width':
 					case 'height':
 						$new_image[ $attribute ] = absint( $image[ $attribute ] );
+						break;
+					case 'gridX':
+					case 'gridY':
+						// Empty string is "no cell assigned" for custom grid; absint( '' ) === 0 would collide with tile at (0,0).
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = absint( $image[ $attribute ] );
+						break;
+					case 'gridLocked':
+						$new_image[ $attribute ] = absint( $image[ $attribute ] ) ? 1 : 0;
 						break;
 					case 'title':
 					case 'description':
@@ -858,6 +1003,57 @@ class Modula_CPT {
 							$new_image[ $attribute ] = $image[ $attribute ];
 						} else {
 							$new_image[ $attribute ] = 'middle';
+						}
+						break;
+					case 'focal_x':
+					case 'focal_y':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$v = floatval( $image[ $attribute ] );
+						if ( ! is_finite( $v ) ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = min( 1, max( 0, $v ) );
+						break;
+					case 'focal_crop_x':
+					case 'focal_crop_y':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$v = floatval( $image[ $attribute ] );
+						if ( ! is_finite( $v ) ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = min( 1, max( 0, $v ) );
+						break;
+					case 'focal_crop_w':
+					case 'focal_crop_h':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$v = floatval( $image[ $attribute ] );
+						if ( ! is_finite( $v ) || $v <= 0 ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$new_image[ $attribute ] = min( 1, max( 1e-6, $v ) );
+						break;
+					case 'tile_image_fit':
+						if ( '' === $image[ $attribute ] || null === $image[ $attribute ] ) {
+							$new_image[ $attribute ] = '';
+							break;
+						}
+						$fit = sanitize_text_field( $image[ $attribute ] );
+						if ( in_array( $fit, array( 'contain', 'cover' ), true ) ) {
+							$new_image[ $attribute ] = $fit;
+						} else {
+							$new_image[ $attribute ] = '';
 						}
 						break;
 					default:
@@ -917,7 +1113,7 @@ class Modula_CPT {
 
 
 		</h2>
-		<br/>
+		<br />
 		<?php
 	}
 
@@ -943,6 +1139,12 @@ class Modula_CPT {
 
 	public function dismiss_edit_notice() {
 
+		check_ajax_referer( 'modula-ajax-save', 'nonce' );
+
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			wp_die( -1, 403 );
+		}
+
 		$modula_options                = get_option( 'modula-checks', array() );
 		$modula_options['edit-notice'] = 1;
 		update_option( 'modula-checks', $modula_options );
@@ -966,7 +1168,9 @@ class Modula_CPT {
 
 			<div id="minor-publishing">
 
-				<?php // Hidden submit button early on so that the browser chooses the right button when form is submitted with Return key ?>
+				<?php
+				// Hidden submit button early on so that the browser chooses the right button when form is submitted with Return key
+				?>
 				<div style="display:none;">
 					<?php submit_button( __( 'Save', 'modula-best-grid-gallery' ), '', 'save' ); ?>
 				</div>
@@ -981,12 +1185,12 @@ class Modula_CPT {
 							}
 							?>
 							<input <?php echo $private_style; ?> type="submit" name="save" id="save-post"
-																value="<?php esc_attr_e( 'Save Draft', 'modula-best-grid-gallery' ); ?>"
-																class="button"/>
+								value="<?php esc_attr_e( 'Save Draft', 'modula-best-grid-gallery' ); ?>"
+								class="button" />
 							<span class="spinner"></span>
 						<?php } elseif ( 'pending' === $post->post_status && $can_publish ) { ?>
 							<input type="submit" name="save" id="save-post"
-									value="<?php esc_attr_e( 'Save as Pending', 'modula-best-grid-gallery' ); ?>" class="button"/>
+								value="<?php esc_attr_e( 'Save as Pending', 'modula-best-grid-gallery' ); ?>" class="button" />
 							<span class="spinner"></span>
 						<?php } ?>
 					</div>
@@ -1010,9 +1214,11 @@ class Modula_CPT {
 							<a class="preview button" href="<?php echo esc_url( $preview_link ); ?>"
 								target="wp-preview-<?php echo (int) $post->ID; ?>"
 								id="post-preview"><?php echo wp_kses_post( $preview_button ); ?></a>
-							<input type="hidden" name="wp-preview" id="wp-preview" value=""/>
+							<input type="hidden" name="wp-preview" id="wp-preview" value="" />
 						</div>
-					<?php endif; // public post type ?>
+						<?php
+					endif; // public post type
+					?>
 					<?php
 					/**
 					 * Fires before the post time/date setting in the Publish meta box.
@@ -1031,28 +1237,28 @@ class Modula_CPT {
 
 					<div class="misc-pub-section misc-pub-post-status">
 						<?php _e( 'Status:', 'modula-best-grid-gallery' ); ?> <span id="post-status-display">
-			<?php
+							<?php
 
-			switch ( $post->post_status ) {
-				case 'private':
-					esc_html_e( 'Privately Published', 'modula-best-grid-gallery' );
-					break;
-				case 'publish':
-					esc_html_e( 'Published', 'modula-best-grid-gallery' );
-					break;
-				case 'future':
-					esc_html_e( 'Scheduled', 'modula-best-grid-gallery' );
-					break;
-				case 'pending':
-					esc_html_e( 'Pending Review', 'modula-best-grid-gallery' );
-					break;
-				case 'draft':
-				case 'auto-draft':
-					esc_html_e( 'Draft', 'modula-best-grid-gallery' );
-					break;
-			}
-			?>
-</span>
+							switch ( $post->post_status ) {
+								case 'private':
+									esc_html_e( 'Privately Published', 'modula-best-grid-gallery' );
+									break;
+								case 'publish':
+									esc_html_e( 'Published', 'modula-best-grid-gallery' );
+									break;
+								case 'future':
+									esc_html_e( 'Scheduled', 'modula-best-grid-gallery' );
+									break;
+								case 'pending':
+									esc_html_e( 'Pending Review', 'modula-best-grid-gallery' );
+									break;
+								case 'draft':
+								case 'auto-draft':
+									esc_html_e( 'Draft', 'modula-best-grid-gallery' );
+									break;
+							}
+							?>
+						</span>
 						<?php
 						if ( 'publish' === $post->post_status || 'private' === $post->post_status || $can_publish ) {
 							$private_style = '';
@@ -1062,32 +1268,32 @@ class Modula_CPT {
 							?>
 							<a href="#post_status" <?php echo $private_style; ?> class="edit-post-status hide-if-no-js"
 								role="button"><span aria-hidden="true"><?php esc_html_e( 'Edit', 'modula-best-grid-gallery' ); ?></span> <span
-										class="screen-reader-text"><?php esc_html_e( 'Edit status', 'modula-best-grid-gallery' ); ?></span></a>
+									class="screen-reader-text"><?php esc_html_e( 'Edit status', 'modula-best-grid-gallery' ); ?></span></a>
 
 							<div id="post-status-select" class="hide-if-js">
 								<input type="hidden" name="hidden_post_status" id="hidden_post_status"
-										value="<?php echo esc_attr( ( 'auto-draft' === $post->post_status ) ? 'draft' : $post->post_status ); ?>"/>
+									value="<?php echo esc_attr( ( 'auto-draft' === $post->post_status ) ? 'draft' : $post->post_status ); ?>" />
 								<label for="post_status" class="screen-reader-text"><?php esc_html_e( 'Set status', 'modula-best-grid-gallery' ); ?></label>
 								<select name="post_status" id="post_status">
 									<?php if ( 'publish' === $post->post_status ) : ?>
 										<option<?php selected( $post->post_status, 'publish' ); ?>
-												value='publish'><?php esc_html_e( 'Published', 'modula-best-grid-gallery' ); ?></option>
-									<?php elseif ( 'private' === $post->post_status ) : ?>
-										<option<?php selected( $post->post_status, 'private' ); ?>
+											value='publish'><?php esc_html_e( 'Published', 'modula-best-grid-gallery' ); ?></option>
+										<?php elseif ( 'private' === $post->post_status ) : ?>
+											<option<?php selected( $post->post_status, 'private' ); ?>
 												value='publish'><?php esc_html_e( 'Privately Published', 'modula-best-grid-gallery' ); ?></option>
-									<?php elseif ( 'future' === $post->post_status ) : ?>
-										<option<?php selected( $post->post_status, 'future' ); ?>
-												value='future'><?php esc_html_e( 'Scheduled', 'modula-best-grid-gallery' ); ?></option>
-									<?php endif; ?>
-									<option<?php selected( $post->post_status, 'pending' ); ?>
-											value='pending'><?php esc_html_e( 'Pending Review', 'modula-best-grid-gallery' ); ?></option>
-									<?php if ( 'auto-draft' === $post->post_status ) : ?>
-										<option<?php selected( $post->post_status, 'auto-draft' ); ?>
-												value='draft'><?php esc_html_e( 'Draft', 'modula-best-grid-gallery' ); ?></option>
-									<?php else : ?>
-										<option<?php selected( $post->post_status, 'draft' ); ?>
-												value='draft'><?php esc_html_e( 'Draft', 'modula-best-grid-gallery' ); ?></option>
-									<?php endif; ?>
+											<?php elseif ( 'future' === $post->post_status ) : ?>
+												<option<?php selected( $post->post_status, 'future' ); ?>
+													value='future'><?php esc_html_e( 'Scheduled', 'modula-best-grid-gallery' ); ?></option>
+												<?php endif; ?>
+												<option<?php selected( $post->post_status, 'pending' ); ?>
+													value='pending'><?php esc_html_e( 'Pending Review', 'modula-best-grid-gallery' ); ?></option>
+													<?php if ( 'auto-draft' === $post->post_status ) : ?>
+														<option<?php selected( $post->post_status, 'auto-draft' ); ?>
+															value='draft'><?php esc_html_e( 'Draft', 'modula-best-grid-gallery' ); ?></option>
+														<?php else : ?>
+															<option<?php selected( $post->post_status, 'draft' ); ?>
+																value='draft'><?php esc_html_e( 'Draft', 'modula-best-grid-gallery' ); ?></option>
+															<?php endif; ?>
 								</select>
 								<a href="#post_status"
 									class="save-post-status hide-if-no-js button"><?php esc_html_e( 'OK', 'modula-best-grid-gallery' ); ?></a>
@@ -1107,8 +1313,8 @@ class Modula_CPT {
 							?>
 							<a class="hide-if-no-js"
 								href="<?php echo esc_url( get_edit_post_link( $args['args']['revision_id'] ) ); ?>"><span
-										aria-hidden="true"><?php esc_html( _ex( 'Browse', 'revisions', 'modula-best-grid-gallery' ) ); ?></span> <span
-										class="screen-reader-text"><?php esc_html_e( 'Browse revisions', 'modula-best-grid-gallery' ); ?></span></a>
+									aria-hidden="true"><?php esc_html( _ex( 'Browse', 'revisions', 'modula-best-grid-gallery' ) ); ?></span> <span
+									class="screen-reader-text"><?php esc_html_e( 'Browse revisions', 'modula-best-grid-gallery' ); ?></span></a>
 						</div>
 						<?php
 					endif;
@@ -1120,7 +1326,7 @@ class Modula_CPT {
 								<?php
 								echo wp_kses_post(
 									sprintf(
-									/* translators: %s: URL to the Customizer. */
+										/* translators: %s: URL to the Customizer. */
 										__( 'This draft comes from your <a href="%s">unpublished customization changes</a>. You can edit, but there&#8217;s no need to publish now. It will be published automatically with those changes.', 'modula-best-grid-gallery' ),
 										esc_url(
 											add_query_arg(
@@ -1194,24 +1400,24 @@ class Modula_CPT {
 							if ( ! empty( $post->post_date_gmt ) && time() < strtotime( $post->post_date_gmt . ' +0000' ) ) :
 								?>
 								<input name="original_publish" type="hidden" id="original_publish"
-										value="<?php echo esc_attr_x( 'Schedule', 'post action/button label', 'modula-best-grid-gallery' ); ?>"/>
+									value="<?php echo esc_attr_x( 'Schedule', 'post action/button label', 'modula-best-grid-gallery' ); ?>" />
 								<?php submit_button( _x( 'Schedule', 'post action/button label', 'modula-best-grid-gallery' ), 'primary large', 'publish', false ); ?>
 
 							<?php elseif ( in_array( $post->post_status, array( 'draft' ), true ) || 0 === $post->ID ) : ?>
 								<input name="original_publish" type="hidden" id="original_publish"
-										value="<?php esc_attr_e( 'Update ', 'modula-best-grid-gallery' ) . 'modula-gallery'; ?>"/>
+									value="<?php esc_attr_e( 'Update ', 'modula-best-grid-gallery' ) . 'modula-gallery'; ?>" />
 								<?php submit_button( __( 'Publish Gallery', 'modula-best-grid-gallery' ), 'primary large', 'publish', false ); ?>
 
 							<?php else : ?>
 								<input name="original_publish" type="hidden" id="original_publish"
-										value="<?php esc_attr_e( 'Update ', 'modula-best-grid-gallery' ) . 'modula-gallery'; ?>"/>
+									value="<?php esc_attr_e( 'Update ', 'modula-best-grid-gallery' ) . 'modula-gallery'; ?>" />
 								<?php submit_button( __( 'Save Gallery', 'modula-best-grid-gallery' ), 'primary large', 'publish', false ); ?>
 								<?php
 							endif;
 						else :
 							?>
 							<input name="original_publish" type="hidden" id="original_publish"
-									value="<?php esc_attr_e( 'Submit for Review', 'modula-best-grid-gallery' ); ?>"/>
+								value="<?php esc_attr_e( 'Submit for Review', 'modula-best-grid-gallery' ); ?>" />
 							<?php submit_button( __( 'Submit for Review', 'modula-best-grid-gallery' ), 'primary large', 'publish', false ); ?>
 							<?php
 						endif;
@@ -1219,23 +1425,23 @@ class Modula_CPT {
 						?>
 
 						<input name="save" type="submit" class="button button-primary button-large" id="publish"
-								value="<?php esc_attr_e( 'Update Gallery', 'modula-best-grid-gallery' ) . 'modula-gallery'; ?>"/>
+							value="<?php esc_attr_e( 'Update Gallery', 'modula-best-grid-gallery' ) . 'modula-gallery'; ?>" />
 						<?php
 					}
 					?>
 				</div>
 				<div class="clear"></div>
 			</div>
-		</div> 
+		</div>
 		<?php
 	}
 
 	/**
-	 * Add the last visited settings tab to edit link
+	 * Append #!{category} to the gallery edit link (v2 settings editor deep link).
+	 * Uses stored legacy `last_visited_tab` only when still present in meta; otherwise defaults to gallery.
 	 *
-	 * @param $link
-	 * @param $id
-	 *
+	 * @param string $link Edit URL.
+	 * @param int    $id   Post ID.
 	 * @return string
 	 * @since 2.4.0
 	 */
@@ -1246,18 +1452,22 @@ class Modula_CPT {
 		}
 
 		$settings = get_post_meta( $id, 'modula-settings', true );
+		$stored   = ( is_array( $settings ) && ! empty( $settings['last_visited_tab'] ) )
+			? $settings['last_visited_tab']
+			: '';
 
-		if ( isset( $settings['last_visited_tab'] ) && '' !== $settings['last_visited_tab'] ) {
-			$tab = sanitize_key( $settings['last_visited_tab'] );
+		if ( apply_filters( 'modula_enable_modern_settings_editor', false, $id ) ) {
+			$category = $this->settings_editor_hash_category( $stored );
 		} else {
-			$tab = 'modula-general';
+			$category = $this->classic_settings_tab_hash( $stored );
 		}
 
-		return $link . '#!' . $tab;
+		return $link . '#!' . $category;
 	}
 
 	/**
-	 * Save the tab
+	 * Legacy AJAX: classic settings UI used this to persist the open tab in post meta.
+	 * The v2 editor uses the URL hash only (#!category); do not write to modula-settings.
 	 */
 	public function modula_remember_tab_save() {
 
@@ -1273,15 +1483,149 @@ class Modula_CPT {
 			wp_send_json( array( 'status' => 'failed' ) );
 		}
 
-		if ( ! current_user_can( 'edit_post', $id ) ) {
-			wp_send_json( array( 'status' => 'failed' ) );
+		wp_send_json( array( 'status' => 'ok' ) );
+	}
+
+	/**
+	 * Map legacy hash fragment / stored tab id to v2 settings editor category slug (URL #!slug).
+	 *
+	 * @param string $stored Legacy e.g. modula-lightboxes or already `layout`.
+	 * @return string
+	 */
+	private function settings_editor_hash_category( $stored ) {
+		$stored = is_string( $stored ) ? trim( $stored ) : '';
+		$v2     = array(
+			'layout',
+			'lightbox',
+			'video',
+			'filters',
+			'interaction',
+			'advanced',
+			'protection',
+		);
+		if ( $stored !== '' && in_array( $stored, $v2, true ) ) {
+			return $stored;
+		}
+		$deprecated_v2 = array(
+			'gallery'        => 'layout',
+			'appearance'     => 'layout',
+			'hover'          => 'layout',
+			'pagination'     => 'layout',
+			'playback'       => 'lightbox',
+			'performance'    => 'advanced',
+			'privacy'        => 'advanced',
+			'proofing'       => 'advanced',
+			'social'         => 'interaction',
+			'download'       => 'interaction',
+			'imageGuardian'  => 'protection',
+			'imageLicensing' => 'protection',
+			'custom'         => 'layout',
+		);
+		if ( $stored !== '' && isset( $deprecated_v2[ $stored ] ) ) {
+			return $deprecated_v2[ $stored ];
+		}
+		$map = array(
+			'modula-general'              => 'layout',
+			'modula-lightboxes'           => 'lightbox',
+			'modula-filters'              => 'filters',
+			'modula-captions'             => 'layout',
+			'modula-social'               => 'interaction',
+			'modula-image-loaded-effects' => 'layout',
+			'modula-image_licensing'      => 'protection',
+			'modula-hover-effect'         => 'layout',
+			'modula-video'                => 'video',
+			'modula-style'                => 'layout',
+			'modula-speedup'              => 'advanced',
+			'modula-exif'                 => 'advanced',
+			'modula-download'             => 'interaction',
+			'modula-zoom'                 => 'advanced',
+			'modula-responsive'           => 'layout',
+			'modula-misc'                 => 'protection',
+			'modula-slideshow'            => 'lightbox',
+			'modula-password_protect'     => 'protection',
+			'modula-watermark'            => 'protection',
+			'modula-customizations'       => 'layout',
+			'modula-comments'             => 'interaction',
+			'modula-pagination'           => 'layout',
+			'modula-proofing'             => 'advanced',
+			'modula-instagram'            => 'advanced',
+		);
+		if ( isset( $map[ $stored ] ) ) {
+			return $map[ $stored ];
+		}
+		return 'layout';
+	}
+
+	/**
+	 * Map stored tab / v2 slug to classic metabox hash (#!modula-general, …).
+	 *
+	 * @param string $stored Legacy tab id or v2 category slug.
+	 * @return string
+	 */
+	private function classic_settings_tab_hash( $stored ) {
+		$stored = is_string( $stored ) ? trim( $stored ) : '';
+		if ( '' === $stored ) {
+			return 'modula-general';
 		}
 
-		$settings                     = wp_parse_args( get_post_meta( $id, 'modula-settings', true ), Modula_CPT_Fields_Helper::get_defaults() );
-		$settings['last_visited_tab'] = isset( $_POST['tab'] ) ? sanitize_text_field( wp_unslash( $_POST['tab'] ) ) : '';
+		$classic = array(
+			'modula-general',
+			'modula-lightboxes',
+			'modula-filters',
+			'modula-captions',
+			'modula-social',
+			'modula-image-loaded-effects',
+			'modula-image_licensing',
+			'modula-hover-effect',
+			'modula-video',
+			'modula-style',
+			'modula-speedup',
+			'modula-exif',
+			'modula-download',
+			'modula-zoom',
+			'modula-responsive',
+			'modula-misc',
+			'modula-slideshow',
+			'modula-password_protect',
+			'modula-watermark',
+			'modula-customizations',
+			'modula-comments',
+			'modula-pagination',
+			'modula-proofing',
+			'modula-instagram',
+		);
+		if ( in_array( $stored, $classic, true ) ) {
+			return $stored;
+		}
 
-		update_post_meta( $id, 'modula-settings', $settings );
-		die();
+		$v2_to_classic = array(
+			'layout'         => 'modula-general',
+			'lightbox'       => 'modula-lightboxes',
+			'video'          => 'modula-video',
+			'filters'        => 'modula-filters',
+			'interaction'    => 'modula-social',
+			'advanced'       => 'modula-speedup',
+			'protection'     => 'modula-misc',
+			'gallery'        => 'modula-general',
+			'appearance'     => 'modula-style',
+			'hover'          => 'modula-hover-effect',
+			'pagination'     => 'modula-pagination',
+			'playback'       => 'modula-slideshow',
+			'performance'    => 'modula-speedup',
+			'privacy'        => 'modula-password_protect',
+			'proofing'       => 'modula-proofing',
+			'social'         => 'modula-social',
+			'download'       => 'modula-download',
+			'imageGuardian'  => 'modula-misc',
+			'imageLicensing' => 'modula-image_licensing',
+			'custom'         => 'modula-customizations',
+		);
+
+		if ( isset( $v2_to_classic[ $stored ] ) ) {
+			return $v2_to_classic[ $stored ];
+		}
+
+		return 'modula-general';
 	}
 
 	public function output_upsell_albums() {
@@ -1363,7 +1707,7 @@ class Modula_CPT {
 	 *
 	 * @return void
 	 * @since 2.9.0
-	*/
+	 */
 	public function search_by_gallery_id( $query ) {
 		global $pagenow;
 
@@ -1400,7 +1744,7 @@ class Modula_CPT {
 	 *
 	 * @return array
 	 * @since 2.9.0
-	*/
+	 */
 	public function filter_by_gallery_type( $views ) {
 		$fields = Modula_CPT_Fields_Helper::get_fields( 'general' );
 
@@ -1424,8 +1768,8 @@ class Modula_CPT {
 		$fields = array_merge(
 			$fields['type']['values'],
 			isset( $fields['type']['disabled']['values'] )
-			? $fields['type']['disabled']['values']
-			: array(),
+				? $fields['type']['disabled']['values']
+				: array(),
 			array( 'image-proofing' => esc_html__( 'Image Proofing', 'modula-best-grid-gallery' ) )
 		);
 
@@ -1462,7 +1806,7 @@ class Modula_CPT {
 	 *
 	 * @return array
 	 * @since 2.9.0
-	*/
+	 */
 	public function add_gallery_type_hidden_field() {
 		global $typenow;
 
