@@ -182,8 +182,9 @@ function modula_item_redirect_url( $item ) {
 /**
  * Apply a per-item Redirect URL as a simple tile link (no lightbox).
  *
- * Used for gallery “no link” (when a URL is set) and for Open in lightbox /
- * hybrid when the item click override is Redirect to URL.
+ * Used for gallery “no link” (when a URL is set) and for hybrid Image click
+ * (`lightbox-prefer-url`) when the item has a Custom URL. Classic Fancybox +
+ * Custom URL also uses this path; Beta Fancybox stays lightbox-first.
  *
  * @param array<string, mixed> $item_data Item data.
  * @param array<string, mixed> $item      Image row.
@@ -247,6 +248,36 @@ function modula_coerce_lightbox_click_mode( $mode ) {
 	return $trimmed;
 }
 
+/**
+ * Whether shortcode/settings belong to a Beta gallery (`_modula_beta`).
+ *
+ * Settings use gallery_id like `jtg-123` (classic) or `modula-123` (Beta).
+ *
+ * @param array<string, mixed> $settings Gallery settings.
+ * @return bool
+ */
+function modula_settings_is_beta_gallery( $settings ) {
+	if ( ! is_array( $settings ) ) {
+		return false;
+	}
+
+	$raw = isset( $settings['gallery_id'] ) ? (string) $settings['gallery_id'] : '';
+	if ( '' === $raw ) {
+		return false;
+	}
+
+	$post_id = absint( preg_replace( '/[^0-9]/', '', $raw ) );
+	if ( $post_id < 1 ) {
+		return false;
+	}
+
+	if ( class_exists( '\Modula\V2\Beta_Settings' ) ) {
+		return \Modula\V2\Beta_Settings::is_beta_gallery( $post_id );
+	}
+
+	return '1' === (string) get_post_meta( $post_id, '_modula_beta', true );
+}
+
 function modula_check_lightboxes_and_links( $item_data, $item, $settings ) {
 
 	// Create link attributes like : title/rel
@@ -281,9 +312,21 @@ function modula_check_lightboxes_and_links( $item_data, $item, $settings ) {
 			$item_data['link_attributes']['href'] = modula_resolve_simple_link_href( $item, $fallback );
 		}
 	} elseif (
-		( 'fancybox' === $lightbox || 'lightbox-prefer-url' === $lightbox )
+		'lightbox-prefer-url' === $lightbox
 		&& '' !== modula_item_redirect_url( $item )
 	) {
+		// Hybrid: Custom URL → tile redirect; items without URL keep Fancybox below.
+		$item_data = modula_apply_per_item_redirect_link( $item_data, $item );
+	} elseif (
+		'fancybox' === $lightbox
+		&& '' !== modula_item_redirect_url( $item )
+		&& ! modula_settings_is_beta_gallery( $settings )
+	) {
+		/*
+		 * Classic habit: Fancybox + Custom URL is still a tile redirect.
+		 * Beta Fancybox stays lightbox-first (Pro adds data-modula-item-url);
+		 * use hybrid Image click for mixed-gallery tile redirects.
+		 */
 		$item_data = modula_apply_per_item_redirect_link( $item_data, $item );
 	} else {
 		if ( modula_href_required() ) {
@@ -299,9 +342,11 @@ function modula_check_lightboxes_and_links( $item_data, $item, $settings ) {
 }
 
 /**
- * Whether flat visitor settings carry a Hover Effect Builder with slot positions.
+ * Whether flat visitor settings carry a Hover Effect Builder that owns item chrome.
  *
- * When true, classic `effect-*` classes and legacy slot hide flags must not apply.
+ * Ownership requires slot positions plus a non-empty `sourcePresetId` stamp (convert /
+ * editor preset). Classic CPT defaults merge can fill a hover_builder with slots and an
+ * empty stamp; that must not suppress classic `effect-*` classes or legacy hide flags.
  *
  * @param array<string, mixed> $settings Flat gallery settings.
  * @return bool
@@ -315,6 +360,15 @@ function modula_settings_use_hover_builder( $settings ) {
 		$builder = $settings['hover_builder'];
 	}
 	if ( ! is_array( $builder ) ) {
+		return false;
+	}
+	$source = '';
+	if ( isset( $builder['sourcePresetId'] ) ) {
+		$source = sanitize_key( (string) $builder['sourcePresetId'] );
+	} elseif ( isset( $builder['sourcepresetid'] ) ) {
+		$source = sanitize_key( (string) $builder['sourcepresetid'] );
+	}
+	if ( '' === $source ) {
 		return false;
 	}
 	$positions = null;
@@ -331,7 +385,7 @@ function modula_check_hover_effect( $item_data, $item, $settings ) {
 	// v2 settings use hover.builder; legacy flat `effect` may be absent after migration.
 	$effect = isset( $settings['effect'] ) ? (string) $settings['effect'] : 'none';
 
-	// Hover builder owns Beta item hover when slot positions exist.
+	// Hover Effect Builder owns chrome when stamped with slot positions (not CPT defaults fill-in).
 	$uses_hover_builder = modula_settings_use_hover_builder( $settings );
 	$captions_below     = isset( $settings['contentPlacement'] )
 		&& 'below-image' === $settings['contentPlacement'];
@@ -460,15 +514,44 @@ function modula_show_schemaorg( $settings = array() ) {
 	<?php
 }
 
-function modula_edit_gallery( $settings ) {
+/**
+ * Admin edit URL for the visitor edit gallery link, or empty when it must not show.
+ *
+ * Respects troubleshooting disable and `edit_post` (via `get_edit_post_link`).
+ *
+ * @param int $gallery_id Gallery post ID.
+ * @return string
+ */
+function modula_visitor_edit_gallery_url( $gallery_id ) {
 	$troubleshooting_options = get_option( 'modula_troubleshooting_option', array() );
 	$disable_edit            = isset( $troubleshooting_options['disable_edit'] ) ? $troubleshooting_options['disable_edit'] : false;
 	if ( apply_filters( 'modula_troubleshooting_disable_edit', $disable_edit ) ) {
+		return '';
+	}
+
+	$gallery_id = absint( $gallery_id );
+	if ( $gallery_id < 1 ) {
+		return '';
+	}
+
+	$url = get_edit_post_link( $gallery_id, 'raw' );
+	return ( is_string( $url ) && '' !== $url ) ? $url : '';
+}
+
+/**
+ * Visitor edit gallery link (classic shortcode only).
+ *
+ * Beta galleries omit PHP output — React renders the same links from bootstrap.
+ *
+ * @param array<string, mixed> $settings Gallery settings.
+ */
+function modula_edit_gallery( $settings ) {
+	if ( modula_settings_is_beta_gallery( $settings ) ) {
 		return;
 	}
 
 	$gallery_id = isset( $settings['gallery_id'] ) ? Modula_Helper::classic_gallery_post_id( $settings['gallery_id'] ) : 0;
-	if ( $gallery_id < 1 ) {
+	if ( $gallery_id < 1 || '' === modula_visitor_edit_gallery_url( $gallery_id ) ) {
 		return;
 	}
 

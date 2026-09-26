@@ -1,3 +1,37 @@
+= 3.0.10 - 25.09.2026 =
+Added: Beta gallery Alignment next to Width (Left / Center / Right; Center by default), including on block themes with constrained content.
+Added: Beta Video max-height cap (default 100vh; vh or px) in Layout under Width & alignment — caps the player + playlist composition.
+Added: Beta Video-type Playback controls again on the Video hub (start by itself / repeat when it ends).
+Added: Beta Video play icon controls on the Video hub when show is on (colour, size, icon preset, custom image); non-Video types keep a Play icon drill. Author-facing copy uses “Play icon”, not badge.
+Changed: Width and Alignment stack vertically on full-width Layout rows; Video max-height sits below that composite (not on the Video hub).
+Changed: Beta Video playlist scrollbar is hidden by default; drag-to-scroll is on while the scrollbar is hidden.
+Changed: Modula AI settings are disabled on local hosts (same grayed-toggle pattern as compression), with matching environment copy.
+Fixed: Beta Video playlist Bottom no longer overflows the gallery width or paints thumbs over the main player.
+Fixed: Beta Video playlist drag-to-scroll no longer blocks thumbnail click-to-play.
+Fixed: Beta Video playlist Bottom keeps a ~16:9 main player under the max-height cap (no longer forces wrap height to 100vh / a tall letterboxed square).
+Fixed: Beta Play icon Icon presets and custom Image file update the admin preview and visitor overlays (no longer stuck on the hardcoded default / gated behind a hidden toggle).
+Fixed: Frontend “Edit gallery” links show above and below the gallery when enabled.
+Fixed: Applying a preset from the gallery listing now correctly sets hover effect to None (no longer leaves classic galleries on Pufrobo).
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.9 - 23.09.2026 =
+Fixed: Beta Video gallery main player starts on the first poster click (marking user interaction no longer remounts the provider mid-gesture).
+Fixed: Classic gallery drag reorder no longer shifts items off-by-one on Update.
+Fixed: Gallery listing keeps search/status/Trash toolbar when another SHOW status still has items (empty Published no longer hides trash).
+Added: Beta setting “Let the theme style pagination and filters” — when on, Modula skips opinionated skins on pagination and filter-bar controls so the active theme can style them (colors still apply). On by default for newly created Beta galleries; existing galleries keep today’s plugin paint until enabled.
+Changed: Classic galleries restore the pre-3.0 habit: Fancybox + Custom URL is again a tile redirect. Beta galleries keep Fancybox lightbox-first with Custom URL as in-lightbox follow; hybrid Image click remains the explicit mixed-gallery redirect.
+Compat: Admin notice and Settings → Diagnostics “Fix Custom URL links” opt-in tool switches Beta Fancybox galleries that still have Custom URLs to Image click “Lightbox, or link when set” (hybrid). Classic galleries are left on Fancybox + Custom URL tile redirect. No silent meta rewrite on upgrade; dismiss hides the notice permanently while Diagnostics stays available to re-run.
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.8 - 21.09.2026 =
+Changed: Zoom on hover is a Lite Interact control for gallery-tile soft scale (Hover card treatment); new galleries default it off. Modula ZOOM (lightbox magnify) and its upsell live under Lightbox → Lightbox zoom.
+Fixed: Classic galleries again emit legacy hover `effect-*` classes when CPT defaults fill in a Hover Effect Builder; Under Image captions return below the image on columns layouts.
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
+= 3.0.7 - 21.09.2026 =
+Fixed: Modern lightbox vendor CSS is scoped under the body Modula host class, and open-state opacity is protected when another plugin styles shared Fancybox container classes (e.g. Easy FancyBox).
+Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/
+
 = 3.0.6 - 18.09.2026 =
 Fixed: Gallery filter name list is no longer wiped to empty/placeholder on classic or Beta save while image tags remain; already-wiped galleries refill the list from per-image tags.
 Info: Read more about Modula 3.0 Beta: https://wp-modula.com/modula-3-0-beta/

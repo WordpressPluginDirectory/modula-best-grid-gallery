@@ -22,6 +22,7 @@ import SettingsPanelSelectRow from './SettingsPanelSelectRow';
 import SettingsPanelPositionGridRow from './SettingsPanelPositionGridRow';
 import SettingsPanelNestedFields from './SettingsPanelNestedFields';
 import SchemaFieldRow from '../../schema/SchemaFieldRow';
+import ZoomOnHoverHubToggle from '../ZoomOnHoverHubToggle';
 
 /**
  * @param {Object} section
@@ -69,9 +70,13 @@ function renderHubFieldItem(item, values, reactKey) {
 		);
 	}
 
-	if (isEmbedded) {
+	/*
+	 * Hub `embedded` means “surface on the hub, not a drill” — not stacked chrome.
+	 * Boolean toggles always use the label|switch row (same as non-embedded hubs).
+	 */
+	if (kind === 'toggle' || kind === 'toggleWithNested') {
 		return (
-			<SettingsPanelEmbeddedField
+			<SettingsPanelToggleRow
 				key={reactKey}
 				groupKey={hit.groupId}
 				field={hit.field}
@@ -80,9 +85,9 @@ function renderHubFieldItem(item, values, reactKey) {
 		);
 	}
 
-	if (kind === 'toggle' || kind === 'toggleWithNested') {
+	if (isEmbedded) {
 		return (
-			<SettingsPanelToggleRow
+			<SettingsPanelEmbeddedField
 				key={reactKey}
 				groupKey={hit.groupId}
 				field={hit.field}
@@ -256,6 +261,17 @@ export default function SettingsPanelBody({ category, onExitCategory }) {
 										>
 											{noteText}
 										</p>
+									);
+								}
+
+								if (item.type === 'zoomOnHoverToggle') {
+									return (
+										<div
+											key={`zoom-on-hover-${i}-${j}`}
+											className="modula-settings-panel__hub-field"
+										>
+											<ZoomOnHoverHubToggle />
+										</div>
 									);
 								}
 

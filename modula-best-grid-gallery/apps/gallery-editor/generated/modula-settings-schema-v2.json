@@ -38,6 +38,15 @@
                 "type": "string",
                 "default": "100%"
             },
+            "alignment": {
+                "type": "string",
+                "enum": [
+                    "left",
+                    "center",
+                    "right"
+                ],
+                "default": "center"
+            },
             "height": {
                 "type": "array",
                 "items": {
@@ -612,7 +621,7 @@
                             "grayscale",
                             "lift"
                         ],
-                        "default": "zoom"
+                        "default": "none"
                     },
                     "graphicElement": {
                         "type": "string",
@@ -858,7 +867,7 @@
                     }
                 },
                 "default": {
-                    "cardTreatment": "zoom",
+                    "cardTreatment": "none",
                     "graphicElement": "none",
                     "graphicVisibility": "on-hover",
                     "dimOverlay": false,
@@ -1408,6 +1417,10 @@
                     "center",
                     "right"
                 ]
+            },
+            "themeInheritControls": {
+                "type": "boolean",
+                "default": false
             }
         },
         "filters": {
@@ -1547,6 +1560,14 @@
                     "right",
                     "bottom"
                 ]
+            },
+            "showPlaylistScrollbar": {
+                "type": "boolean",
+                "default": false
+            },
+            "maxHeight": {
+                "type": "string",
+                "default": "100vh"
             },
             "autoplayVideos": {
                 "type": "boolean",
